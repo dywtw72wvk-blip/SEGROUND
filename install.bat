@@ -97,11 +97,25 @@ call :install "Fleet Hub Core" HubCore.cs || goto :fail
 call :install "Fleet Hub UI"   HubUI.cs   || goto :fail
 call :install "Fleet Drone"    Drone.cs   || goto :fail
 
+rem Put the scripts straight into programmable blocks in saved worlds and
+rem blueprints (blocks named [Fleet Core] / [Fleet UI] / [Fleet Drone], or
+rem already running a Fleet script). Paths go via env vars so spaces and
+rem brackets in folder names are safe.
+set "FLEET_DIST=%SRC%"
+set "FLEET_PATCHER=%SRC%\..\tools\FleetPatch.cs"
+if not exist "%FLEET_PATCHER%" goto :donemsg
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Path $env:FLEET_PATCHER -ReferencedAssemblies System, System.Xml; $r = [FleetPatch]::Run($env:FLEET_DIST, (Join-Path $env:APPDATA 'SpaceEngineers'), $false, $false); exit $r"
+if errorlevel 1 if not errorlevel 2 echo WARNING: updating worlds/blueprints failed - see above. Browse Scripts still works.
+
+:donemsg
 echo.
-echo Done. In game: open a programmable block, click Edit, then Browse Scripts,
-echo and pick a "Fleet" script. Then Check Code, then Remember and Exit.
-echo If the game was already running and the scripts are not listed, restart it.
-echo To update later, just run this installer again.
+echo ================================================
+echo  Done.
+echo ================================================
+echo Programmable blocks named [Fleet Core], [Fleet UI] or [Fleet Drone] in your
+echo saved worlds and blueprints now run the latest scripts: just load the world.
+echo For any other block: Edit, Browse Scripts, pick a "Fleet" script.
+echo To update later, close the game and run this installer again.
 echo.
 pause
 exit /b 0

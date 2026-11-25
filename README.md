@@ -7,17 +7,24 @@ A multi-drone fleet for Space Engineers programmable blocks. One hub script runs
 - `docs/ARCHITECTURE.md` is the design and roadmap. Phase 2 is the Buster defense drone.
 - `src/` holds the source fragments. `tools/build.py` assembles them (`--check` compile-checks against `tools/stubs`).
 
-## Install (Windows)
+## Install (Windows), fully automatic
 
-**Recommended: install with Git (one file, easy updates)**
-1. Install Git for Windows if you don't have it: https://git-scm.com/download/win
-2. Download `install.bat` from this repo and double-click it. If Windows SmartScreen appears, click *More info → Run anyway*.
-3. The first run clones the repo into `Documents\SEGROUND`. Because the repo is private, a GitHub sign-in window may appear once. It then installs the scripts into Space Engineers' local scripts folder.
-4. In game, open a programmable block and click **Edit → Browse Scripts**. Pick *Fleet Hub Core*, *Fleet Hub UI* or *Fleet Drone*, then click **Check Code** and **Remember & Exit**.
+1. **One-time:** install Git for Windows (https://git-scm.com/download/win).
+2. **In game,** name your programmable blocks:
+   - the hub's main PB `... [Fleet Core]`
+   - the hub's screen PB `... [Fleet UI]`
+   - each drone's PB `... [Fleet Drone]`
 
-**To update:** run `install.bat` again. It pulls the latest version and reinstalls. Then re-select the script in each programmable block.
+   Save, then **exit the game**.
+3. Double-click **`install.bat`**. If SmartScreen appears, click *More info → Run anyway*. It:
+   - clones the repo into `Documents\SEGROUND` (first run; a GitHub sign-in window may appear once) or updates it,
+   - installs the scripts for *Browse Scripts*,
+   - **writes the scripts straight into those programmable blocks** in your saved worlds and blueprints. It shows the list and asks first, and backs up every file it changes as `*.fleetbak-<time>`.
+4. Load the world. The scripts are already in and running.
 
-**Without Git:** click **Code → Download ZIP**, use *Extract All…*, and run `install.bat` from the extracted folder. It falls back to the `dist` folder next to it.
+**To update:** close the game and run `install.bat` again. Every block already running a Fleet script, including ones in blueprints, gets the new version.
+
+**Without Git:** click **Code → Download ZIP**, use *Extract All…*, and run `install.bat` from the extracted folder.
 
 ## Build (developers)
 

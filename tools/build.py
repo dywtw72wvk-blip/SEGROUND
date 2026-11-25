@@ -84,6 +84,14 @@ def main():
                 print("  " + out.replace("\n", "\n  "))
         else:
             print(status)
+    if do_check:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = subprocess.run(["mcs", "-langversion:5", "-nologo", "-r:System.Xml.dll", f"-out:{tmp}/FleetPatch.exe",
+                                str(ROOT / "tools" / "FleetPatch.cs")], capture_output=True, text=True)
+            print("FleetPatch (installer, C# 5)  compile: " + ("OK" if r.returncode == 0 else "FAILED"))
+            if r.returncode != 0:
+                print("  " + (r.stdout + r.stderr).strip().replace("\n", "\n  "))
+                ok_all = False
     sys.exit(0 if ok_all else 1)
 
 

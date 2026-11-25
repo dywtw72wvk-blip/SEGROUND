@@ -21,7 +21,9 @@ Paste-ready scripts are in `dist/`. Each is one file per programmable block (PB)
 
 If you edit `src/`, regenerate `dist/` with `python3 tools/build.py`. Add `--check` to compile-check against API stubs, which requires Mono's `mcs`.
 
-To install a script:
+**Easiest: automatic install.** Name the programmable blocks in game: `[Fleet Core]` on the hub's main PB, `[Fleet UI]` on the hub's screen PB, and `[Fleet Drone]` on each drone's PB. Save, exit the game, then run `install.bat`. It writes the scripts straight into those blocks in your saved worlds and blueprints, with backups. See the README for details.
+
+To install a script manually:
 1. Open the PB and click **Edit**.
 2. Select all, paste the file, then click **Check Code**.
 3. Click **Remember & Exit**.
