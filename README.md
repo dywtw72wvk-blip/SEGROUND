@@ -9,11 +9,15 @@ A multi-drone fleet for Space Engineers programmable blocks. One hub script runs
 
 ## Install (Windows)
 
-1. On GitHub, click **Code → Download ZIP** and extract it.
-2. Double-click **`install.bat`** inside the extracted folder. If Windows SmartScreen appears, click *More info → Run anyway*.
-3. In game, open a programmable block and click **Edit → Browse Scripts**. Pick *Fleet Hub Core*, *Fleet Hub UI* or *Fleet Drone*, then click **Check Code** and **Remember & Exit**.
+**Recommended: install with Git (one file, easy updates)**
+1. Install Git for Windows if you don't have it: https://git-scm.com/download/win
+2. Download `install.bat` from this repo and double-click it. If Windows SmartScreen appears, click *More info → Run anyway*.
+3. The first run clones the repo into `Documents\SEGROUND`. Because the repo is private, a GitHub sign-in window may appear once. It then installs the scripts into Space Engineers' local scripts folder.
+4. In game, open a programmable block and click **Edit → Browse Scripts**. Pick *Fleet Hub Core*, *Fleet Hub UI* or *Fleet Drone*, then click **Check Code** and **Remember & Exit**.
 
-To update, download the ZIP again, re-run `install.bat`, then re-select the script in each programmable block.
+**To update:** run `install.bat` again. It pulls the latest version and reinstalls. Then re-select the script in each programmable block.
+
+**Without Git:** click **Code → Download ZIP**, use *Extract All…*, and run `install.bat` from the extracted folder. It falls back to the `dist` folder next to it.
 
 ## Build (developers)
 
