@@ -4,7 +4,7 @@ A multi-drone fleet for Space Engineers programmable blocks. One hub script runs
 
 - `dist/` holds the paste-ready scripts: `HubCore.cs`, `HubUI.cs` and `Drone.cs`.
 - `docs/SETUP.md` covers in-game setup, commands and the phase 1 acceptance test.
-- `docs/ARCHITECTURE.md` is the design and roadmap. Phase 2 is the Buster defense drone.
+- `docs/ARCHITECTURE.md` is the design and roadmap. Phase 2 (done) adds Buster defense drones: alert levels, an automatic screen, charge rotation, patrols and a tactical map.
 - `src/` holds the source fragments. `tools/build.py` assembles them (`--check` compile-checks against `tools/stubs`).
 
 ## Install (Windows), fully automatic

@@ -5,7 +5,7 @@ In-game Programmable Block (PB) scripts for Space Engineers. They're built in tw
 - **Hub**: one script that runs either a mobile **Carrier** or a static **Base**, switchable at runtime. Each mode has its own strengths.
 - **Drones**: a shared drone core plus role modules. The first role is the **Buster**, a small, cheap defense drone built in numbers. It's inspired by the Bobiverse busters: lots of small drones screening and protecting the mothership.
 
-Status: **Phase 1 implemented** (`src/`, `dist/`, `docs/SETUP.md`), awaiting the in-game acceptance test. Phases 2–4 are planned.
+Status: **Phases 1–2 implemented**: fleet core plus Buster defense. Phase 2 is awaiting the in-game acceptance test (`docs/SETUP.md` §10). Phases 3–4 are planned.
 
 ---
 

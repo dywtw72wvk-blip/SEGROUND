@@ -34,23 +34,25 @@ class Net
     }
 
     // ---------------- NAV (hub -> all, broadcast) ----------------
+    // phase/rate: shared patrol rotation (radians, rad/s) so all drones orbit in step
     public void SendNav(Vector3D pos, Vector3D vel, Vector3D fwd, Vector3D up, Vector3D ang,
-                        Vector3D koc, double kor, int mode, int alert)
+                        Vector3D koc, double kor, int mode, int alert, double phase, double rate)
     {
         IGC.SendBroadcastMessage(TNav,
-            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int>>(
+            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>>(
                 Hdr(Proto.M_NAV, 0),
                 new MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>(pos, vel, fwd, up, ang),
-                new MyTuple<Vector3D, double, int, int>(koc, kor, mode, alert)));
+                new MyTuple<Vector3D, double, int, int, double, double>(koc, kor, mode, alert, phase, rate)));
     }
 
     public bool ReadNav(MyIGCMessage m, HubFrame f)
     {
-        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int>>)) return false;
-        var n = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int>>)m.Data;
+        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>>)) return false;
+        var n = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>>)m.Data;
         if (!Ok(n.Item1, Proto.M_NAV)) return false;
         f.Pos = n.Item2.Item1; f.Vel = n.Item2.Item2; f.Fwd = n.Item2.Item3; f.Up = n.Item2.Item4; f.AngVel = n.Item2.Item5;
         f.KoC = n.Item3.Item1; f.KoR = n.Item3.Item2; f.Mode = n.Item3.Item3; f.Alert = n.Item3.Item4;
+        f.Phase = n.Item3.Item5; f.Rate = n.Item3.Item6;
         f.Valid = true;
         return true;
     }

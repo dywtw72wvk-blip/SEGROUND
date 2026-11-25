@@ -1,8 +1,8 @@
 // ============================================================================
-// FLEET SYSTEM — HUB UI (phase 1)
-// Renders the fleet list on LCDs / cockpit screens tagged [FS:Fleet] (or
-// [FS:Fleet:1] for surface index 1) and turns button presses into commands
-// for Hub Core (same construct, local IGC).
+// FLEET SYSTEM — HUB UI (phase 2)
+// Renders the fleet list on LCDs / cockpit screens tagged [FS:Fleet] and the
+// tactical map on [FS:Map] (add :1 etc. for a cockpit surface index), and
+// turns button presses into commands for Hub Core (same construct, local IGC).
 //
 // Arguments: up | down | left | right | apply | back
 //            anything else is forwarded to Hub Core; the word "sel" is replaced
@@ -15,14 +15,15 @@ Cfg cfg;
 readonly Perf perf = new Perf();
 IMyBroadcastListener snapL;
 readonly List<IMyTextSurface> fleetSurf = new List<IMyTextSurface>();
+readonly List<IMyTextSurface> mapSurf = new List<IMyTextSurface>();
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
-string fleetTag = "FS:Fleet";
+string fleetTag = "FS:Fleet", mapTag = "FS:Map";
 double T, snapT = -1e9, nextScan;
 bool flip;
 
 // snapshot from Hub Core
-int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs;
-bool hAutoRtb, hWp;
+int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert;
+bool hAutoRtb, hWp, hAlertForced, hSafe, hDefense;
 string hForm = "", hName = "";
 readonly List<Row> rows = new List<Row>();
 readonly List<string> evts = new List<string>();
@@ -30,15 +31,19 @@ readonly List<string> evts = new List<string>();
 // selection
 string selCall = "";
 int scroll, action;
-static readonly string[] Actions = { "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "FORM", "MODE" };
-static readonly string[] ActionCmd = { "escort", "hold", "goto", "dock", "undock", "stop", "formation next", "mode next" };
+// Row 1 acts on the selected drone (or ALL); row 2 is fleet-wide.
+const int TargetedActions = 7;
+static readonly string[] Actions = { "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "AUTO",
+                                     "SCRAMBLE", "RECALL", "ALERT", "SAFE", "FORM", "MODE" };
+static readonly string[] ActionCmd = { "escort", "hold", "goto", "dock", "undock", "stop", "auto",
+                                       "scramble", "recall", "alert next", "safe toggle", "formation next", "mode next" };
 
 class Row
 {
     public string Call = "", Role = "";
     public int State, Dir, Batt, Integ, Cargo, H2, Speed, Flags, LostS;
     public long Dist, LX, LY, LZ;
-    public bool Unresp, Queued, Acked;
+    public bool Unresp, Queued, Acked, Managed;
 }
 
 public Program()
@@ -54,6 +59,7 @@ void LoadConfig()
     cfg = new Cfg(Me, SEC);
     int netId = cfg.I("NetId", 1);
     fleetTag = cfg.S("FleetTag", "FS:Fleet");
+    mapTag = cfg.S("MapTag", "FS:Map");
     cfg.Save();
     net.Configure(netId, "");
     if (snapL != null) IGC.DisableBroadcastListener(snapL);
@@ -62,15 +68,21 @@ void LoadConfig()
 
 void Scan()
 {
-    fleetSurf.Clear();
+    Collect(fleetTag, fleetSurf);
+    Collect(mapTag, mapSurf);
+}
+
+void Collect(string tag, List<IMyTextSurface> into)
+{
+    into.Clear();
     tmp.Clear();
-    string open = "[" + fleetTag;
+    string open = "[" + tag;
     GridTerminalSystem.GetBlocksOfType(tmp, b => b.IsSameConstructAs(Me) && b is IMyTextSurfaceProvider && b.CustomName.Contains(open));
     foreach (var b in tmp)
     {
         var p = (IMyTextSurfaceProvider)b;
-        int idx = TagIndex(b.CustomName, fleetTag);
-        if (idx < p.SurfaceCount) fleetSurf.Add(p.GetSurface(idx));
+        int idx = TagIndex(b.CustomName, tag);
+        if (idx < p.SurfaceCount) into.Add(p.GetSurface(idx));
     }
 }
 
@@ -100,7 +112,7 @@ public void Main(string arg, UpdateType src)
     if (input) Input(arg.Trim());
     if (T >= nextScan) { Scan(); nextScan = T + 10; }
     if (input || (src & UpdateType.Update10) != 0) Render();
-    Echo("FLEET HUB UI\nScreens: " + fleetSurf.Count + " tagged [" + fleetTag + "]\nCore link: " +
+    Echo("FLEET HUB UI\nScreens: " + fleetSurf.Count + " [" + fleetTag + "], " + mapSurf.Count + " [" + mapTag + "]\nCore link: " +
          (Linked() ? "OK" : "NONE (is Hub Core running with the same NetId?)") + "\n" + perf.Text());
 }
 
@@ -119,7 +131,7 @@ void Input(string arg)
         case "apply": case "select":
             {
                 string c = ActionCmd[action];
-                if (action < 6) c += " " + Target();
+                if (action < TargetedActions) c += " " + Target();
                 Send(c);
             }
             break;
@@ -166,6 +178,7 @@ void Parse(string s)
             case "H":
                 hMode = I(f, 1); hCfgMode = I(f, 2); hForm = f.Length > 3 ? f[3] : ""; hSpacing = I(f, 4); hAutoRtb = I(f, 5) == 1;
                 hFree = I(f, 6); hDocks = I(f, 7); hWp = I(f, 8) == 1; hPerfUs = I(f, 9); hOnline = I(f, 10); hName = f.Length > 11 ? f[11] : "";
+                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1;
                 break;
             case "D":
                 {
@@ -175,7 +188,7 @@ void Parse(string s)
                     r.Batt = I(f, 5); r.Integ = I(f, 6); r.Cargo = I(f, 7); r.H2 = I(f, 8);
                     r.Dist = L(f, 9); r.Speed = I(f, 10); r.Flags = I(f, 11); r.LostS = I(f, 12);
                     r.Unresp = I(f, 13) == 1; r.Queued = I(f, 14) == 1; r.Acked = I(f, 15) == 1;
-                    r.LX = L(f, 16); r.LY = L(f, 17); r.LZ = L(f, 18);
+                    r.LX = L(f, 16); r.LY = L(f, 17); r.LZ = L(f, 18); r.Managed = I(f, 19) == 1;
                 }
                 break;
             case "E":
@@ -190,4 +203,5 @@ void Render()
 {
     flip = !flip;
     foreach (var s in fleetSurf) DrawFleet(s);
+    foreach (var s in mapSurf) DrawMap(s);
 }

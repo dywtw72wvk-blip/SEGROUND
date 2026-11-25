@@ -1,7 +1,11 @@
 // ============================================================================
-// FLEET SYSTEM — DRONE CORE (phase 1)
-// Runs on every drone. Registers with a hub, follows orders (escort, hold,
-// goto, dock, undock, stop), docks itself, reports telemetry.
+// FLEET SYSTEM — DRONE (phase 2: Buster defense role)
+// Runs on every drone. Registers with a hub, follows orders (escort/screen,
+// patrol, hold, goto, dock, undock, stop), docks itself, reports telemetry.
+// Buster role: when the hub says ENGAGE, turns on the drone's [Combat] blocks
+// (turrets, weapons, AI combat blocks) and fires [Engage] timers. In
+// EngageMode=AI it hands flight to the vanilla AI blocks inside a leash around
+// its station, then takes control back. The fighting itself is vanilla.
 // Arguments: provision | reset | stop | rescan
 // ============================================================================
 const string SEC = "Drone";
@@ -21,17 +25,21 @@ readonly List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
 readonly List<IMyThrust> thr = new List<IMyThrust>();
 readonly List<IMyGyro> gyr = new List<IMyGyro>();
 readonly List<IMyShipConnector> conns = new List<IMyShipConnector>();
+readonly List<IMyFunctionalBlock> combat = new List<IMyFunctionalBlock>();
+readonly List<IMyTimerBlock> tEng = new List<IMyTimerBlock>(), tDis = new List<IMyTimerBlock>();
+readonly List<IMyLargeTurretBase> turrets = new List<IMyLargeTurretBase>();
 
 // --- config
 int netId;
-string key = "", role = "Drone", perfMode = "NORMAL", connTag = "", ctlTag = "";
+string key = "", role = "Buster", perfMode = "NORMAL", connTag = "", ctlTag = "";
+string engageMode = "STATION", combatTag = "[Combat]", engTag = "[Engage]", disTag = "[Disengage]";
 double maxSpeed, dockSpeed, approach, rtbBatt, linkTimeout, clearance;
-bool provisioned;
+bool provisioned, combatIdleOff = true;
 
 // --- runtime state
 double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince;
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
-bool registered, controlling, arrived;
+bool registered, controlling, arrived, combatOn, leashBreak;
 long hubAddr;
 string call = "";
 readonly HubFrame hub = new HubFrame();
@@ -91,7 +99,7 @@ void LoadConfig()
     cfg = new Cfg(Me, SEC);
     netId = cfg.I("NetId", 0);
     key = cfg.S("Key", "");
-    role = cfg.S("Role", "Drone");
+    role = cfg.S("Role", "Buster");
     perfMode = cfg.S("Perf", "Normal").ToUpper();
     maxSpeed = cfg.D("MaxSpeed", 100);
     dockSpeed = cfg.D("DockSpeed", 1.5);
@@ -101,6 +109,11 @@ void LoadConfig()
     linkTimeout = cfg.D("LinkTimeout", 5);
     connTag = cfg.S("ConnectorTag", "");
     ctlTag = cfg.S("ControllerTag", "");
+    engageMode = cfg.S("EngageMode", "Station").ToUpper();     // Station | AI
+    combatTag = cfg.S("CombatTag", "[Combat]");
+    engTag = cfg.S("EngageTimerTag", "[Engage]");
+    disTag = cfg.S("DisengageTimerTag", "[Disengage]");
+    combatIdleOff = cfg.B("CombatOffWhenIdle", true);
     fl.UseObserver = cfg.B("DisturbanceComp", true);
     fl.Kp = cfg.D("PositionGain", 0.8);
     fl.Kv = cfg.D("VelocityGain", 2.5);
@@ -120,11 +133,16 @@ void Scan()
 {
     blocks.Clear();
     GridTerminalSystem.GetBlocksOfType(blocks, b => b.IsSameConstructAs(Me));
-    thr.Clear(); gyr.Clear(); conns.Clear();
+    thr.Clear(); gyr.Clear(); conns.Clear(); combat.Clear(); tEng.Clear(); tDis.Clear(); turrets.Clear();
     ctl = null; conn = null; ant = null;
     IMyShipController anyCtl = null;
     foreach (var b in blocks)
     {
+        var fb = b as IMyFunctionalBlock;
+        if (fb != null && combatTag.Length > 0 && b.CustomName.Contains(combatTag)) combat.Add(fb);
+        var tm = b as IMyTimerBlock;
+        if (tm != null) { if (b.CustomName.Contains(engTag)) tEng.Add(tm); else if (b.CustomName.Contains(disTag)) tDis.Add(tm); }
+        var tu = b as IMyLargeTurretBase; if (tu != null) turrets.Add(tu);
         var t = b as IMyThrust; if (t != null) { thr.Add(t); continue; }
         var g = b as IMyGyro; if (g != null) { gyr.Add(g); continue; }
         var c = b as IMyShipController;
@@ -143,6 +161,7 @@ void Scan()
 
     tel.Bind(blocks);
     if (ctl != null) fl.Bind(ctl, thr, gyr);
+    if (combatIdleOff || combatOn) foreach (var b in combat) if (b.Enabled != combatOn) b.Enabled = combatOn;
 
     var w = new StringBuilder();
     if (cfg.Error.Length > 0) w.Append(cfg.Error).Append('\n');
@@ -152,6 +171,7 @@ void Scan()
     if (conn == null) w.Append("WARN: no connector" + (connTag.Length > 0 ? " tagged " + connTag : "") + ": cannot dock.\n");
     if (ant == null) w.Append("WARN: no antenna: no hub link.\n");
     else if (!ant.IsWorking || !ant.EnableBroadcasting) w.Append("WARN: antenna off or not broadcasting.\n");
+    if (engageMode == "AI" && combat.Count == 0 && tEng.Count == 0) w.Append("WARN: EngageMode=AI but no " + combatTag + " blocks or " + engTag + " timers.\n");
     warn = w.ToString();
 }
 
@@ -273,6 +293,8 @@ void SendStatus()
     if (state == Proto.S_LINKLOST) f |= Proto.F_LINKLOST;
     if (!docked && !fl.HasThrust) f |= Proto.F_NO_THRUST;
     if (arrived) f |= Proto.F_ARRIVED;
+    if (combatOn) f |= Proto.F_ENGAGED;
+    if (!docked) foreach (var t in turrets) if (!t.Closed && t.IsWorking && t.HasTarget) { f |= Proto.F_CONTACT; break; }
     long dockId = docked && conn.OtherConnector != null ? conn.OtherConnector.EntityId : 0;
     net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt, tel.H2, tel.Cargo, tel.Integ, f);
 }
@@ -324,7 +346,10 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
     arrived = false;
     switch (code)
     {
-        case Proto.O_ESCORT: Enter(Proto.S_ESCORT); break;
+        case Proto.O_ESCORT:
+            // already on station: just take the new slot/flags, FlyStation adapts
+            if (state != Proto.S_ESCORT && state != Proto.S_PATROL && state != Proto.S_ENGAGED) Enter(Proto.S_ESCORT);
+            break;
         case Proto.O_HOLD: CaptureHold(); Enter(Proto.S_HOLD); break;
         case Proto.O_GOTO: CaptureHold(); Enter(Proto.S_GOTO); break;
         case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
@@ -366,9 +391,12 @@ void BeginUndock()
 // ---------------------------------------------------------------- state machine
 void Enter(int s)
 {
-    bool flying = s == Proto.S_HOLD || s == Proto.S_ESCORT || s == Proto.S_GOTO || s == Proto.S_APPROACH ||
+    bool flying = s == Proto.S_HOLD || s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_GOTO || s == Proto.S_APPROACH ||
                   s == Proto.S_FINAL || s == Proto.S_UNDOCKING || s == Proto.S_LINKLOST;
+    bool station = s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_ENGAGED;
+    if (!station) { leashBreak = false; if (combatOn) SetCombat(false); }
     if (s == Proto.S_DOCKED) { fl.Release(true); DockedPower(true); controlling = false; }
+    else if (s == Proto.S_ENGAGED) { if (controlling) fl.Release(true); controlling = false; }   // vanilla AI flies
     else if (!flying) { if (controlling) fl.Release(true); controlling = false; }
     else if (!controlling) { fl.Engage(); controlling = true; }
     fl.Freeze = s == Proto.S_FINAL;
@@ -387,8 +415,10 @@ void Step()
             FlyHoldAt(holdPos);
             break;
         case Proto.S_ESCORT:
+        case Proto.S_PATROL:
+        case Proto.S_ENGAGED:
             if (!fresh) { LinkLost(); break; }
-            FlyEscort();
+            FlyStation();
             break;
         case Proto.S_GOTO:
             FlyGoto();
@@ -417,7 +447,8 @@ void Step()
 
 void LinkLost()
 {
-    prevState = state; lostSince = T;
+    // resume as ESCORT: combat blocks were switched off, FlyStation re-engages if still ordered
+    prevState = state == Proto.S_ENGAGED ? Proto.S_ESCORT : state; lostSince = T;
     CaptureHold();
     Enter(Proto.S_LINKLOST);
 }
@@ -433,13 +464,56 @@ Vector3D UpRef(Vector3D fallback)
     return fl.Grav.LengthSquared() > 0.01 ? -Util.Norm(fl.Grav) : fallback;
 }
 
-void FlyEscort()
+// Station keeping for ESCORT / PATROL / ENGAGED.
+// Order params: tA = slot offset (hub-local), tB = facing (hub-local),
+//               tC = (engage 0/1, leash metres, patrol 0/1)
+void FlyStation()
 {
     MatrixD m = hub.Matrix(T);
-    Vector3D tgt = HubFrame.ToWorld(m, tA);
-    fl.FlyTo(Avoid(tgt, m), hub.VelAt(tgt, m), maxSpeed);
-    Vector3D face = HubFrame.DirToWorld(m, tB.LengthSquared() > 0.1 ? tB : new Vector3D(0, 0, -1));
-    fl.Aim(ctl.WorldMatrix, face, m.Up);
+    Vector3D off = tA, face = tB.LengthSquared() > 0.1 ? tB : new Vector3D(0, 0, -1);
+    bool patrol = tC.Z > 0.5, engage = tC.X > 0.5;
+    double leash = tC.Y > 1 ? tC.Y : 600;
+    Vector3D center = hub.KeepOut(T);
+    if (patrol)
+    {
+        // every drone rotates its slot by the same hub-supplied phase -> spacing is kept
+        Vector3D lc = HubFrame.ToLocal(m, center);
+        double ph = hub.PhaseAt(T);
+        off = lc + HubFrame.RotY(tA - lc, ph);
+        face = HubFrame.RotY(face, ph);
+    }
+    Vector3D tgt = HubFrame.ToWorld(m, off);
+    Vector3D tv = hub.VelAt(tgt, m);
+    if (patrol) tv += Vector3D.Cross(m.Up * hub.Rate, tgt - center);
+    double away = (fl.Pos - tgt).Length();
+
+    // AI engage: vanilla AI blocks fly and fight while inside the leash
+    if (engage && engageMode == "AI" && !leashBreak)
+    {
+        if (away > leash) leashBreak = true;
+        else
+        {
+            if (state != Proto.S_ENGAGED) { SetCombat(true); Enter(Proto.S_ENGAGED); }
+            return;
+        }
+    }
+    if (leashBreak && (!engage || away < leash * 0.3)) leashBreak = false;
+
+    int want = patrol ? Proto.S_PATROL : Proto.S_ESCORT;
+    if (state != want) Enter(want);                     // from ENGAGED: script takes the controls back
+    bool combatWanted = engage && engageMode != "AI";   // Station mode: weapons on, keep flying the slot
+    if (combatOn != combatWanted) SetCombat(combatWanted);
+
+    fl.FlyTo(Avoid(tgt, m), tv, maxSpeed);
+    fl.Aim(ctl.WorldMatrix, HubFrame.DirToWorld(m, face), m.Up);
+}
+
+// Turn [Combat] blocks on/off and fire the matching timer blocks
+void SetCombat(bool on)
+{
+    if (on || combatIdleOff) foreach (var b in combat) if (!b.Closed && b.Enabled != on) b.Enabled = on;
+    foreach (var t in on ? tEng : tDis) if (!t.Closed && t.IsFunctional) t.Trigger();
+    combatOn = on;
 }
 
 void FlyGoto()
@@ -569,6 +643,8 @@ void BuildEcho()
     if (!provisioned) sb.Append("NOT PROVISIONED\nDock to a hub (auto-provision) or set\nNetId + Key in Custom Data, then run 'provision'.\n");
     else sb.Append("Net ").Append(netId).Append("   Hub: ").Append(registered ? (NavFresh() ? "linked" : "NO SIGNAL") : "searching...").Append('\n');
     sb.Append("Battery ").Append(Util.Pct(tel.Batt)).Append("   Hull ").Append(Util.Pct(tel.Integ)).Append("   Speed ").Append((int)fl.Vel.Length()).Append(" m/s\n");
+    sb.Append("Engage mode ").Append(engageMode).Append("   Combat ").Append(combatOn ? "ON" : "off")
+      .Append("   (").Append(combat.Count).Append(" blocks, ").Append(turrets.Count).Append(" turrets)\n");
     sb.Append(perf.Text()).Append('\n');
     sb.Append(warn);
     echo = sb.ToString();

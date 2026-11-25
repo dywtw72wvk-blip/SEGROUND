@@ -19,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 DIST = ROOT / "dist"
 STUBS = ROOT / "tools" / "stubs" / "SEStubs.cs"
-VERSION = "0.1.0-phase1"
+VERSION = "0.2.0-phase2"
 PB_CHAR_LIMIT = 100_000
 
 SHARED = ["Shared/Proto.cs", "Shared/Util.cs", "Shared/Cfg.cs", "Shared/Net.cs", "Shared/Frame.cs"]
@@ -33,6 +33,7 @@ USINGS = """using System;
 using System.Collections.Generic;
 using System.Text;
 using VRage;
+using VRage.Game;
 using VRageMath;
 using VRage.Game.ModAPI.Ingame;
 using VRage.Game.ModAPI.Ingame.Utilities;

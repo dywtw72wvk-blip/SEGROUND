@@ -1,7 +1,15 @@
 // ============================================================================
-// FLEET SYSTEM — HUB CORE (phase 1)
+// FLEET SYSTEM — HUB CORE (phase 2)
 // Runs on the carrier or base. Registry, Carrier/Base/Auto modes, reference
 // frame broadcast, reliable orders, dock manager, formations, provisioning.
+// Phase 2 defense: alert levels from the hub's own turrets/sensors and drone
+// reports; automatic screen size per alert, launch/recall/charge rotation,
+// patrol orbit, engage/disengage of drones' vanilla combat blocks, SAFE switch.
+//
+// Defense commands:
+//   auto <target>   manual <target>   defense <on|off|toggle>
+//   alert <auto|green|yellow|red>     safe <on|off|toggle>
+//   scramble (launch everything, alert RED)     recall (defense off, all dock)
 //
 // Commands (toolbar / button panel / Hub UI):
 //   escort|follow|launch <target>   hold <target>      goto <target> [GPS:...]
@@ -26,6 +34,10 @@ readonly List<IMyShipConnector> dockConns = new List<IMyShipConnector>();
 readonly List<IMyShipConnector> allConns = new List<IMyShipConnector>();
 readonly List<IMyLandingGear> gears = new List<IMyLandingGear>();
 readonly List<IMyProgrammableBlock> pbs = new List<IMyProgrammableBlock>();
+readonly List<IMyLargeTurretBase> hubTurrets = new List<IMyLargeTurretBase>();
+readonly List<IMySensorBlock> alertSensors = new List<IMySensorBlock>();
+readonly List<MyDetectedEntityInfo> sensed = new List<MyDetectedEntityInfo>();
+readonly List<Drone> mOut = new List<Drone>(), mReady = new List<Drone>(), mIdle = new List<Drone>();
 readonly Dictionary<long, Drone> reg = new Dictionary<long, Drone>();
 readonly List<Drone> sorted = new List<Drone>();
 readonly Docks docks = new Docks();
@@ -38,14 +50,24 @@ int netId, cfgMode;
 string key = "", dockTag = "", ctlTag = "", perfMode = "NORMAL", formC = "WEDGE", formB = "RING";
 double spacing, koCfg, rtbBatt, rtbInteg, lostAfter;
 bool autoRtb, autoProv, hasWp;
+// defense config
+bool defense;
+int screenG, screenY, screenR, engageAlert;
+double leash, launchBatt, rotateBatt, launchInterval, alertCooldown, patrolBase, patrolCarrier;
+string alertTag = "[Alert]";
+string[] defenseRoles = { "BUSTER", "DRONE" };
 Vector3D wp;
 
 // --- persistent runtime (Storage)
 int epoch, callCtr;
+int alertOverride = -1;   // -1 = automatic
+bool safe;
 long ctr;
 
 // --- runtime
 double T, nextNav, nextTask, nextSnap, nextScan, nextProv, nextEcho, nextMode, lastModeT, anchoredFor;
+double nextManage, lastRed = -1e9, phase, rate;
+int alert = Proto.ALERT_GREEN;
 int mode = Proto.MODE_CARRIER;
 bool havePos, moving;
 Vector3D lastPos, vel, angVel;
@@ -69,11 +91,12 @@ public void Save()
 {
     var ini = new MyIni();
     ini.Set("hub", "epoch", epoch); ini.Set("hub", "ctr", ctr); ini.Set("hub", "calls", callCtr);
+    ini.Set("hub", "alertOv", alertOverride); ini.Set("hub", "safe", safe);
     foreach (var d in reg.Values)
     {
         string s = "d" + d.Addr;
         ini.Set(s, "call", d.Call); ini.Set(s, "role", d.Role); ini.Set(s, "grid", d.Grid);
-        ini.Set(s, "dir", d.Dir); ini.Set(s, "id", d.Id); ini.Set(s, "conn", d.Conn);
+        ini.Set(s, "dir", d.Dir); ini.Set(s, "id", d.Id); ini.Set(s, "conn", d.Conn); ini.Set(s, "man", d.Managed);
         SetV(ini, s, "a", d.A); SetV(ini, s, "b", d.B); SetV(ini, s, "c", d.C);
     }
     Storage = ini.ToString();
@@ -85,6 +108,7 @@ void Load()
     if (!string.IsNullOrEmpty(Storage) && ini.TryParse(Storage))
     {
         epoch = ini.Get("hub", "epoch").ToInt32(); ctr = ini.Get("hub", "ctr").ToInt64(); callCtr = ini.Get("hub", "calls").ToInt32();
+        alertOverride = ini.Get("hub", "alertOv").ToInt32(-1); safe = ini.Get("hub", "safe").ToBoolean();
         var secs = new List<string>();
         ini.GetSections(secs);
         foreach (var s in secs)
@@ -94,6 +118,7 @@ void Load()
             var d = new Drone { Addr = addr, Restored = true };
             d.Call = ini.Get(s, "call").ToString(""); d.Role = ini.Get(s, "role").ToString(""); d.Grid = ini.Get(s, "grid").ToString("");
             d.Dir = ini.Get(s, "dir").ToInt32(); d.Id = ini.Get(s, "id").ToInt64(); d.Conn = ini.Get(s, "conn").ToInt64();
+            d.Managed = ini.Get(s, "man").ToBoolean(IsDefense(d.Role));
             d.A = GetV(ini, s, "a"); d.B = GetV(ini, s, "b"); d.C = GetV(ini, s, "c");
             if (d.Conn != 0) docks.Res[d.Conn] = d.Addr;
             reg[addr] = d;
@@ -125,6 +150,21 @@ void LoadConfig()
     rtbInteg = cfg.D("RtbIntegrity", 0.6);
     lostAfter = cfg.D("LostAfter", 10);
     autoProv = cfg.B("AutoProvision", true);
+    defense = cfg.B("Defense", true);
+    defenseRoles = cfg.S("DefenseRoles", "Buster,Drone").ToUpper().Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+    screenG = cfg.I("ScreenGreen", 2);
+    screenY = cfg.I("ScreenYellow", 4);
+    screenR = cfg.I("ScreenRed", -1);
+    string ea = cfg.S("EngageAlert", "RED").ToUpper();
+    engageAlert = ea == "YELLOW" ? Proto.ALERT_YELLOW : ea == "NEVER" ? 99 : Proto.ALERT_RED;
+    leash = cfg.D("Leash", 600);
+    launchBatt = cfg.D("LaunchBattery", 0.8);
+    rotateBatt = cfg.D("RotateBattery", 0.4);
+    launchInterval = Math.Max(0.5, cfg.D("LaunchInterval", 1.0));
+    alertCooldown = cfg.D("AlertCooldown", 60);
+    alertTag = cfg.S("AlertSensorTag", "[Alert]");
+    patrolBase = cfg.D("BasePatrolSpeed", 8);
+    patrolCarrier = cfg.D("CarrierPatrolSpeed", 0);
     perfMode = cfg.S("Perf", "Normal").ToUpper();
     string wps = cfg.S("Waypoint", "");
     string nm;
@@ -142,7 +182,7 @@ void Scan()
 {
     tmp.Clear();
     GridTerminalSystem.GetBlocksOfType(tmp, b => b.IsSameConstructAs(Me));
-    dockConns.Clear(); allConns.Clear(); gears.Clear();
+    dockConns.Clear(); allConns.Clear(); gears.Clear(); hubTurrets.Clear(); alertSensors.Clear();
     refCtl = null;
     IMyShipController any = null, main = null;
     bool antennaOk = false;
@@ -159,6 +199,8 @@ void Scan()
             continue;
         }
         var g = b as IMyLandingGear; if (g != null) { gears.Add(g); continue; }
+        var tu = b as IMyLargeTurretBase; if (tu != null) { hubTurrets.Add(tu); continue; }
+        var se = b as IMySensorBlock; if (se != null) { if (b.CustomName.Contains(alertTag)) alertSensors.Add(se); continue; }
         var a = b as IMyRadioAntenna; if (a != null && a.IsWorking && a.EnableBroadcasting) antennaOk = true;
     }
     if (refCtl == null) refCtl = main ?? any;
@@ -188,6 +230,9 @@ void Tick(double dt)
 {
     if (T >= nextScan) { Scan(); nextScan = T + 15; }
     UpdateFrame(dt);
+    double ps = mode == Proto.MODE_BASE ? patrolBase : patrolCarrier;
+    rate = ps > 0 ? ps / Math.Max(10, KeepOutRadius() + spacing) : 0;
+    phase = (phase + rate * dt) % (2 * Math.PI);
     if (T >= nextMode) { ResolveMode(T - lastModeT); lastModeT = T; nextMode = T + 0.25; }
     Receive();
     if (T >= nextNav) { SendNav(); nextNav = T + NavPeriod(); }
@@ -263,7 +308,7 @@ void SetFreq()
 
 void SendNav()
 {
-    net.SendNav(M.Translation, vel, M.Forward, M.Up, angVel, Me.CubeGrid.WorldVolume.Center, KeepOutRadius(), mode, 0);
+    net.SendNav(M.Translation, vel, M.Forward, M.Up, angVel, Me.CubeGrid.WorldVolume.Center, KeepOutRadius(), mode, alert, phase, rate);
 }
 
 // ---------------------------------------------------------------- messages
@@ -319,7 +364,7 @@ Drone GetOrAdd(long addr, string role)
 {
     Drone d;
     if (reg.TryGetValue(addr, out d)) return d;
-    d = new Drone { Addr = addr, Role = role, Call = NewCall(role), Seen = T, LostFlag = false };
+    d = new Drone { Addr = addr, Role = role, Call = NewCall(role), Seen = T, LostFlag = false, Managed = IsDefense(role) };
     reg[addr] = d;
     Log("New drone " + d.Call);
     return d;
@@ -426,7 +471,10 @@ void Tasking()
         }
     }
 
-    // formation slots
+    UpdateAlert();
+    Manage();
+
+    // formation slots (c = engage flag, leash, patrol flag)
     string form = mode == Proto.MODE_BASE ? formB : formC;
     double R = KeepOutRadius();
     Vector3D lc = HubFrame.ToLocal(M, Me.CubeGrid.WorldVolume.Center);
@@ -439,12 +487,99 @@ void Tasking()
         Vector3D pat = Formation.Offset(form, i++, n, spacing, R);
         Vector3D off = lc + pat;
         Vector3D face = mode == Proto.MODE_BASE ? Formation.Outward(pat) : new Vector3D(0, 0, -1);
-        if (!d.SlotOk || (off - d.A).LengthSquared() > 0.25 || (face - d.B).LengthSquared() > 0.01)
+        bool engage = !safe && IsDefense(d.Role) && alert >= engageAlert;
+        Vector3D c = new Vector3D(engage ? 1 : 0, leash, rate > 0 ? 1 : 0);
+        if (!d.SlotOk || (off - d.A).LengthSquared() > 0.25 || (face - d.B).LengthSquared() > 0.01 || (c - d.C).LengthSquared() > 0.01)
         {
-            Issue(d, Proto.O_ESCORT, off, face, Vector3D.Zero, 0);
+            Issue(d, Proto.O_ESCORT, off, face, c, 0);
             d.SlotOk = true;
         }
     }
+}
+
+// ---------------------------------------------------------------- defense
+bool IsDefense(string role) { return Array.IndexOf(defenseRoles, (role ?? "").ToUpper()) >= 0; }
+
+Action<Drone> Manual(Action<Drone> act) { return d => { d.Managed = false; act(d); }; }
+
+// GREEN: quiet. YELLOW: [Alert] sensor sees an enemy, or RED in the last AlertCooldown s.
+// RED: a hub turret has a target, or a drone reports its turrets have one.
+void UpdateAlert()
+{
+    bool red = false, yellow = false;
+    foreach (var t in hubTurrets) if (!t.Closed && t.IsWorking && t.HasTarget) { red = true; break; }
+    if (!red) foreach (var d in reg.Values) if (!d.LostFlag && (d.Flags & Proto.F_CONTACT) != 0) { red = true; break; }
+    foreach (var s in alertSensors)
+    {
+        if (yellow || s.Closed || !s.IsWorking) continue;
+        sensed.Clear();
+        s.DetectedEntities(sensed);
+        foreach (var e in sensed) if (e.Relationship == MyRelationsBetweenPlayerAndBlock.Enemies) { yellow = true; break; }
+    }
+    if (red) lastRed = T;
+    int a = red ? Proto.ALERT_RED : (yellow || T - lastRed < alertCooldown) ? Proto.ALERT_YELLOW : Proto.ALERT_GREEN;
+    if (alertOverride >= 0) a = alertOverride;
+    if (a != alert)
+    {
+        Log("ALERT " + Proto.AlertName(a) + (alertOverride >= 0 ? " (forced)" : ""));
+        alert = a; nextManage = T;
+    }
+}
+
+// Keeps the right number of managed drones on screen for the alert level,
+// launches the best-charged, recalls surplus, rotates low-battery drones out.
+// One action per LaunchInterval so departures from the docks are staggered.
+void Manage()
+{
+    if (!defense || T < nextManage) return;
+    mOut.Clear(); mReady.Clear(); mIdle.Clear();
+    int total = 0;
+    foreach (var d in sorted)
+    {
+        if (!d.Managed || d.LostFlag) continue;
+        total++;
+        if (d.Dir == Proto.O_ESCORT) mOut.Add(d);
+        else if (d.Docked) { if (d.Batt < 0 || d.Batt >= launchBatt) mReady.Add(d); }
+        else if (d.Dir != Proto.O_DOCK) mIdle.Add(d);
+    }
+    int target = alert == Proto.ALERT_RED ? screenR : alert == Proto.ALERT_YELLOW ? screenY : screenG;
+    if (target < 0 || target > total) target = total;
+    double interval = alertOverride == Proto.ALERT_RED ? 0.5 : launchInterval;
+    bool canDock = docks.List.Count > 0;
+
+    if (mOut.Count < target)
+    {
+        Drone pick = mIdle.Count > 0 ? mIdle[0] : Best(mReady, true);
+        if (pick != null) { OrderEscort(pick); Log("Launch " + pick.Call + " (" + Proto.AlertName(alert) + ")"); nextManage = T + interval; return; }
+    }
+    else if (mIdle.Count > 0 && canDock)
+    {
+        OrderDock(mIdle[0]); nextManage = T + interval; return;
+    }
+    if (mOut.Count > target && canDock)
+    {
+        Drone pick = Best(mOut, false);
+        OrderDock(pick); Log("Stand down " + pick.Call); nextManage = T + interval; return;
+    }
+    if (mReady.Count > 0 && canDock)
+    {
+        Drone low = Best(mOut, false);
+        if (low != null && low.Batt >= 0 && low.Batt < rotateBatt)
+        {
+            Drone fresh = Best(mReady, true);
+            OrderEscort(fresh); OrderDock(low);
+            Log("Rotate: " + fresh.Call + " out, " + low.Call + " in to charge");
+            nextManage = T + interval;
+        }
+    }
+}
+
+// Highest (or lowest) battery drone in a list
+static Drone Best(List<Drone> l, bool highest)
+{
+    Drone b = null;
+    foreach (var d in l) if (b == null || (highest ? d.Batt > b.Batt : d.Batt < b.Batt)) b = d;
+    return b;
 }
 
 // ---------------------------------------------------------------- commands
@@ -457,10 +592,10 @@ void Command(string raw)
     switch (v)
     {
         case "escort": case "follow": case "launch":
-            ForTargets(tgt, OrderEscort);
+            ForTargets(tgt, Manual(OrderEscort));
             break;
         case "hold":
-            ForTargets(tgt, d => Issue(d, Proto.O_HOLD, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0));
+            ForTargets(tgt, Manual(d => Issue(d, Proto.O_HOLD, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0)));
             break;
         case "goto":
             {
@@ -471,18 +606,63 @@ void Command(string raw)
                     p = wp;
                 }
                 if (tgt.StartsWith("GPS:")) tgt = "all";
-                ForTargets(tgt, d => Issue(d, Proto.O_GOTO, p, Vector3D.Zero, Vector3D.Zero, 0));
+                ForTargets(tgt, Manual(d => Issue(d, Proto.O_GOTO, p, Vector3D.Zero, Vector3D.Zero, 0)));
             }
             break;
-        case "dock": case "rtb": case "recall":
+        case "dock": case "rtb":
             if (docks.List.Count == 0) { Log("No docks tagged " + dockTag); break; }
-            ForTargets(tgt, OrderDock);
+            ForTargets(tgt, Manual(OrderDock));
             break;
         case "undock":
-            ForTargets(tgt, d => Issue(d, Proto.O_UNDOCK, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0));
+            ForTargets(tgt, Manual(d => Issue(d, Proto.O_UNDOCK, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0)));
             break;
         case "stop":
-            ForTargets(tgt, d => Issue(d, Proto.O_STOP, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0));
+            ForTargets(tgt, Manual(d => Issue(d, Proto.O_STOP, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0)));
+            break;
+        case "recall":
+            defense = false; cfg.Set("Defense", "false"); alertOverride = -1;
+            Log("RECALL: defense paused, all drones docking");
+            if (docks.List.Count > 0) ForTargets("all", OrderDock);
+            break;
+        case "scramble":
+            defense = true; cfg.Set("Defense", "true"); alertOverride = Proto.ALERT_RED;
+            foreach (var d in reg.Values) if (IsDefense(d.Role)) d.Managed = true;
+            Log("SCRAMBLE: launching all defense drones (alert RED until 'alert auto')");
+            nextManage = T; nextTask = T;
+            break;
+        case "auto":
+            ForTargets(tgt, d => d.Managed = true);
+            Log("Automatic defense control: " + tgt); nextManage = T;
+            break;
+        case "manual":
+            ForTargets(tgt, d => d.Managed = false);
+            Log("Manual control: " + tgt);
+            break;
+        case "defense":
+            {
+                string a = tgt.ToLower();
+                defense = a == "on" ? true : a == "off" ? false : !defense;
+                cfg.Set("Defense", defense ? "true" : "false");
+                Log("Defense manager " + (defense ? "ON" : "OFF")); nextManage = T;
+            }
+            break;
+        case "alert":
+            {
+                string a = tgt.ToUpper();
+                int ov = a == "GREEN" ? 0 : a == "YELLOW" ? 1 : a == "RED" ? 2 : a == "AUTO" || a == "ALL" ? -1 : a == "NEXT" ? (alertOverride + 2) % 4 - 1 : -2;
+                if (ov == -2) { Log("alert: auto | green | yellow | red | next"); break; }
+                alertOverride = ov;
+                Log("Alert " + (ov < 0 ? "automatic" : "forced " + Proto.AlertName(ov)));
+                nextTask = T;
+            }
+            break;
+        case "safe":
+            {
+                string a = tgt.ToLower();
+                safe = a == "on" ? true : a == "off" ? false : !safe;
+                Log(safe ? "SAFE: all combat blocks standing down" : "SAFE off: engagement allowed");
+                nextTask = T;
+            }
             break;
         case "formation":
             {
@@ -592,7 +772,9 @@ void SendSnapshot()
     sb.Append("H|").Append(mode).Append('|').Append(cfgMode).Append('|').Append(mode == Proto.MODE_BASE ? formB : formC)
       .Append('|').Append((int)spacing).Append('|').Append(autoRtb ? 1 : 0).Append('|').Append(docks.Free()).Append('|').Append(docks.List.Count)
       .Append('|').Append(hasWp ? 1 : 0).Append('|').Append((int)(perf.Avg * 1000)).Append('|').Append(online)
-      .Append('|').Append(Util.Clean(Me.CubeGrid.CustomName)).Append('\n');
+      .Append('|').Append(Util.Clean(Me.CubeGrid.CustomName))
+      .Append('|').Append(alert).Append('|').Append(alertOverride >= 0 ? 1 : 0).Append('|').Append(safe ? 1 : 0).Append('|').Append(defense ? 1 : 0)
+      .Append('\n');
     foreach (var d in sorted)
     {
         Vector3D lp = HubFrame.ToLocal(M, d.Pos);
@@ -601,7 +783,8 @@ void SendSnapshot()
           .Append('|').Append((long)lp.Length()).Append('|').Append((int)(d.Vel - vel).Length()).Append('|').Append(d.Flags)
           .Append('|').Append(d.LostFlag ? (int)Math.Min(99999, Math.Max(0, T - d.Seen)) : -1).Append('|').Append(d.Unresp ? 1 : 0)
           .Append('|').Append(d.Dir == Proto.O_DOCK && d.Conn == 0 ? 1 : 0).Append('|').Append(d.Acked ? 1 : 0)
-          .Append('|').Append((long)lp.X).Append('|').Append((long)lp.Y).Append('|').Append((long)lp.Z).Append('\n');
+          .Append('|').Append((long)lp.X).Append('|').Append((long)lp.Y).Append('|').Append((long)lp.Z)
+          .Append('|').Append(d.Managed ? 1 : 0).Append('\n');
     }
     for (int i = 0; i < evText.Count; i++) sb.Append("E|").Append((int)(T - evT[i])).Append('|').Append(evText[i]).Append('\n');
     IGC.SendBroadcastMessage(net.TSnap, sb.ToString(), TransmissionDistance.CurrentConstruct);
@@ -622,6 +805,9 @@ void BuildEcho()
     e.Append("Mode: ").Append(Proto.ModeName(mode)).Append(" (setting ").Append(Proto.ModeName(cfgMode)).Append(")\n");
     e.Append("Drones: ").Append(online).Append(" online / ").Append(reg.Count).Append("   Docks free: ").Append(docks.Free()).Append('/').Append(docks.List.Count).Append('\n');
     e.Append("Formation: ").Append(mode == Proto.MODE_BASE ? formB : formC).Append(' ').Append((int)spacing).Append("m   Auto-RTB: ").Append(autoRtb ? "on" : "off").Append('\n');
+    e.Append("Alert: ").Append(Proto.AlertName(alert)).Append(alertOverride >= 0 ? " (forced)" : " (auto)")
+     .Append("   Defense: ").Append(defense ? "on" : "off").Append(safe ? "   SAFE" : "")
+     .Append("   Turrets: ").Append(hubTurrets.Count).Append("  Alert sensors: ").Append(alertSensors.Count).Append('\n');
     e.Append(perf.Text()).Append('\n');
     e.Append(warn);
     for (int i = evText.Count - 1; i >= Math.Max(0, evText.Count - 5); i--) e.Append(Util.Age((int)(T - evT[i]))).Append("  ").Append(evText[i]).Append('\n');

@@ -184,3 +184,126 @@ Those decide the tuning before phase 2 (the Buster).
 | Drone overshoots or wobbles at its slot | Lower `VelocityGain` to 2.0, or `PositionGain` to 0.6. |
 | Drone drifts slowly off its slot under load | Make sure `DisturbanceComp=true`. |
 | `OVER BUDGET` in runtime | Set `Perf=Low` on drones and hub. Drones fly a bit looser at Update10. |
+
+---
+
+# Phase 2: Buster defense drones
+
+Phase 2 adds automatic defense on top of phase 1:
+- **Alert levels** set from the hub's own turrets and sensors.
+- **Screen size per alert:** the hub keeps the right number of Busters out for the current level.
+- **Charge rotation:** low-battery drones are swapped with charged ones.
+- **Patrols** that orbit the hub.
+- **Combat switching:** the hub turns each Busters' vanilla combat blocks on and off.
+- **SCRAMBLE, RECALL and SAFE switches.**
+- **A tactical map screen.**
+
+The fighting is done by vanilla turrets, weapons and AI combat blocks. The scripts handle fleet coordination.
+
+> **Update every script together.** The message format changed (protocol v2), so phase 1 and phase 2 scripts can't talk to each other. Closing the game and running `install.bat` updates every tagged programmable block at once.
+
+## 7. Building a Buster
+
+Start with a phase 1 drone, then add:
+- **Weapons.** Turrets or fixed weapons. Add `[Combat]` to the name of each block the hub should switch on when engaging.
+- **Optional, for `EngageMode=AI`:** vanilla **AI Flight (Move)** plus **AI Offensive** (or **AI Defensive**) blocks, set up in their terminal the way you want them to fight. Add `[Combat]` to their names too.
+- **Optional timer blocks** named `[Engage]` and `[Disengage]`. They fire when combat starts and stops. Put any toolbar actions on them that a simple on/off doesn't cover, such as switching an AI block's behaviour on or off.
+
+Drone Custom Data (new keys):
+
+```ini
+Role=Buster              ; roles in the hub's DefenseRoles are managed automatically
+EngageMode=Station       ; Station = keep flying the slot, weapons on
+                         ; AI      = hand flight to the vanilla AI blocks inside the leash
+CombatTag=[Combat]
+EngageTimerTag=[Engage]
+DisengageTimerTag=[Disengage]
+CombatOffWhenIdle=true   ; [Combat] blocks are off unless engaged (keeps AI blocks from fighting the script)
+```
+
+- **Station mode:** the drone keeps its formation or patrol slot, and its `[Combat]` blocks (turrets) are switched on.
+- **AI mode:** the script lets go of the thrusters and gyros, and the vanilla AI blocks take over inside the **leash** radius around the drone's slot. If the drone strays beyond the leash, the script takes control back, turns combat off and flies home. It re-engages once it's within 30% of the leash.
+- Either way, a drone whose own turrets have a target reports that to the hub, which raises the alert.
+
+## 8. Hub defense setup
+
+**Alert sources:**
+
+| Source | Raises alert to |
+|--------|-----------------|
+| A hub turret has a target | **RED** |
+| A drone's turret has a target | **RED** |
+| A sensor named `[Alert]` detects an enemy | **YELLOW** |
+| RED within the last `AlertCooldown` seconds | **YELLOW** |
+| None of the above | **GREEN** |
+
+For an `[Alert]` sensor, turn on enemy detection in its terminal and set its range.
+
+Hub Custom Data (new keys):
+
+```ini
+Defense=true            ; automatic defense manager
+DefenseRoles=Buster,Drone
+ScreenGreen=2           ; drones kept out at GREEN
+ScreenYellow=4
+ScreenRed=-1            ; -1 = all
+EngageAlert=RED         ; RED | YELLOW | NEVER  - when screen drones switch combat on
+Leash=600               ; metres around each slot (AI mode)
+LaunchBattery=0.8       ; only launch drones charged at least this much
+RotateBattery=0.4       ; swap an out drone below this for a charged one
+LaunchInterval=1        ; seconds between launches/recalls (0.5 during SCRAMBLE)
+AlertCooldown=60
+AlertSensorTag=[Alert]
+BasePatrolSpeed=8       ; m/s orbit of the station ring in BASE mode (0 = static stations)
+CarrierPatrolSpeed=0
+```
+
+**Manual control.** Any manual order (`escort`, `hold`, `goto`, `dock`, `undock`, `stop`) takes that drone out of automatic control. The fleet screen shows **A** next to drones under automatic control. To hand a drone back, use `auto <drone|all>`.
+
+## 9. Defense commands
+
+| Command | Effect |
+|---------|--------|
+| `scramble` | Launch every defense drone now and force alert RED. `alert auto` ends it. |
+| `recall` | Pause the defense manager and dock everything. `defense on` resumes. |
+| `alert auto` / `green` / `yellow` / `red` / `next` | Force an alert level, or return to automatic. |
+| `safe on` / `off` / `toggle` | **SAFE:** combat blocks on all drones stand down, whatever the alert. Drones keep flying their slots. |
+| `defense on` / `off` / `toggle` | Turn the automatic manager on or off. |
+| `auto <target>` / `manual <target>` | Hand drones to the manager, or take them back. |
+
+Hub UI button rows:
+- **Row 1** acts on the selected drone: ESCORT, HOLD, GOTO, DOCK, UNDOCK, STOP, AUTO.
+- **Row 2** is fleet-wide: SCRAMBLE, RECALL, ALERT, SAFE, FORM, MODE.
+
+Left and right move through both rows.
+
+**Tactical map:** put `[FS:Map]` in an LCD's name. It's a top-down radar in the hub's frame, with hub forward pointing up. It shows range rings, an elevation stem under each drone, state colours, a red ring around engaged drones and an alert-coloured border.
+
+## 10. Phase 2 acceptance test
+
+**H. Standby (GREEN)**
+
+17. Dock 4 or more Busters and let them charge to 80% or more. Run `defense on` and `alert auto`. Exactly `ScreenGreen` (2) launch, one every `LaunchInterval`, and take slots. In BASE mode they orbit slowly. They show `A` and `PATROL` or `ESCORT`.
+
+**I. Alert levels**
+
+18. Run `alert yellow`. Busters launch until 4 are out.
+19. Run `alert red`. All launch. With `EngageAlert=RED`, their `[Combat]` blocks switch on: the map shows red rings and the fleet screen shows `+W` or `ENGAGED`.
+20. Run `alert green`. Surplus drones stand down and dock, and combat switches off.
+
+**J. Real contact**
+
+21. Spawn a hostile target (for example, an enemy-owned grid) inside a hub turret's range. The alert goes RED on its own, the screen grows, and the drones engage. Once it's destroyed, the alert drops to YELLOW, then to GREEN after `AlertCooldown`.
+
+**K. AI mode and leash**
+
+22. Set `EngageMode=AI` on one Buster, with AI Flight and AI Offensive blocks tagged `[Combat]`. At RED, its state shows `ENGAGED` and the vanilla AI flies it. Lure it beyond `Leash`: it should disengage, fly back to its slot, and re-engage once close.
+
+**L. Rotation and safety**
+
+23. Set `RotateBattery=0.95` on the hub. An out drone is swapped for a charged one (`Rotate: ... out, ... in`). Set it back afterwards.
+24. Run `safe on` during RED. All combat blocks switch off and drones hold their slots. Run `safe off` to resume.
+25. Run `scramble`. Everything launches at 0.5 s intervals. Then `alert auto`.
+26. Run `recall`. Everything docks and the manager pauses. Then `defense on`.
+
+Report which steps passed, plus any oddities: AI hand-over behaviour, leash distance feel, patrol speed and runtime numbers.
