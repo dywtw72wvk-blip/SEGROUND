@@ -615,7 +615,7 @@ void FlyRecon()
 
 // Target fix: our own lidar ping on tId if fresh, else the hub's last fix extrapolated.
 bool Fix() { return det.EntityId == tId && T - detT < 2; }
-Vector3D AtkPos() { return Fix() ? det.Position + (Vector3D)det.Velocity * (T - detT) : tA + tB * Math.Min(20, T - atkT); }
+Vector3D AtkPos() { return Fix() ? det.Position + (Vector3D)det.Velocity * (T - detT) : tA + tB * Math.Min(5, T - atkT); }
 Vector3D AtkVel() { return Fix() ? (Vector3D)det.Velocity : tB; }
 
 // LOITER: tC = (slot, slots, ring distance). Death ring RingDistance up a RingCone cone over the
@@ -629,8 +629,7 @@ void FlyLoiter()
     Vector3D slot = tp + (u * Math.Cos(th) + rad * Math.Sin(th)) * R;
     fl.FlyTo(Lift(slot), tv + tan * (w * R * Math.Sin(th)), maxSpeed);
     atkAz = rad;
-    Vector3D to = Util.Norm(tp - fl.Pos);
-    fl.Aim(ctl.WorldMatrix, to, AimUp(to, u));
+    AimLevel(tp - fl.Pos, u);
     arrived = (slot - fl.Pos).Length() < 100;
 }
 
@@ -642,7 +641,7 @@ void FlyAttack()
     double dist = to.Length();
     if (atkAz.LengthSquared() < 0.5) { Vector3D h = -to - u * Vector3D.Dot(-to, u); atkAz = h.LengthSquared() > 1 ? Util.Norm(h) : Util.Norm(Util.Perp(u)); }
     double closing = Math.Max(20, Vector3D.Dot(fl.Vel - tv, Util.Norm(to)));
-    Vector3D aim = tp + tv * Math.Min(10, dist / closing), dir = Util.Norm(aim - fl.Pos);
+    Vector3D aim = tp + tv * Math.Min(6, dist / closing), dir = Util.Norm(aim - fl.Pos);
     Vector3D side = Util.Norm(Vector3D.Cross(dir, atkAz));
     aim += side * (weave * Util.Clamp((dist - armDist) / Math.Max(1, standoff - armDist), 0, 1) * Math.Sin(T * 1.6 + tC.X * 0.01));
     Terminal(aim, dir, tv, dist, u, Fix() ? detSize * 0.4 : 0);
@@ -652,7 +651,7 @@ void FlyAttack()
 void Terminal(Vector3D aim, Vector3D dir, Vector3D tv, double dist, Vector3D u, double size)
 {
     fl.FlyTo(aim + dir * 300, tv, maxSpeed);
-    fl.Aim(ctl.WorldMatrix, dir, AimUp(dir, u));
+    AimLevel(dir, u);
     bool arm = dist < armDist;
     foreach (var w in heads) if (!w.Closed && w.IsArmed != arm) w.IsArmed = arm;
     if (arm && dist < fuse + size) foreach (var w in heads) if (!w.Closed) w.Detonate();
@@ -676,12 +675,20 @@ void FlyIntercept()
         return;
     }
     double closing = Math.Max(20, Vector3D.Dot(fl.Vel - tv, Util.Norm(to)));
-    Vector3D aim = tp + tv * Math.Min(10, dist / closing);
+    Vector3D aim = tp + tv * Math.Min(6, dist / closing);
     Terminal(aim, Util.Norm(aim - fl.Pos), tv, dist, u, Fix() ? detSize * 0.4 : 0);
 }
 
-// roll reference: gravity-up when flying level, the approach azimuth when pointing steeply down
-Vector3D AimUp(Vector3D f, Vector3D u) { return Math.Abs(Vector3D.Dot(f, u)) > 0.7 ? atkAz : u; }
+// Stay level and only yaw toward the target: the Buster's lift thruster is its only strong axis, and
+// pointing the nose down a dive leaves it unable to steer. Gravity brings it down, the lift thruster
+// and the horizontal thrusters correct the path.
+void AimLevel(Vector3D dir, Vector3D u)
+{
+    Vector3D h = dir - u * Vector3D.Dot(dir, u);
+    if (h.LengthSquared() < 0.01) h = -atkAz;
+    if (h.LengthSquared() > 0.01) holdFwd = Util.Norm(h);
+    fl.Aim(ctl.WorldMatrix, holdFwd, u);
+}
 
 // Camera lidar, capped at LidarRate rays/s (a raycast into terrain is a costly physics query; many
 // Buster x many rays kills sim speed). Over a planet while searching: a grid of ground points ahead,

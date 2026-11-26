@@ -45,7 +45,7 @@ bool facOk, pRepair, pRearm;
 int facSt, facProg, facBuilt, facDemand, pCharging, pMaxC, pReserve, pStock, pLive, pRepairN, pRearmN;
 string facMsg = "";
 bool hAutoRtb, hWp, hAlertForced, hSafe, hDefense;
-string hForm = "", hName = "";
+string hForm = "", hName = "", hTgt = "";
 readonly List<Row> rows = new List<Row>();
 readonly List<string> evts = new List<string>();
 
@@ -246,7 +246,7 @@ void Parse(string s)
             case "H":
                 hMode = I(f, 1); hCfgMode = I(f, 2); hForm = f.Length > 3 ? f[3] : ""; hSpacing = I(f, 4); hAutoRtb = I(f, 5) == 1;
                 hFree = I(f, 6); hDocks = I(f, 7); hWp = I(f, 8) == 1; hPerfUs = I(f, 9); hOnline = I(f, 10); hName = f.Length > 11 ? f[11] : "";
-                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16); hSad = I(f, 17);
+                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16); hSad = I(f, 17); hTgt = f.Length > 18 ? f[18] : "";
                 break;
             case "D":
                 {

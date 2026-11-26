@@ -41,7 +41,7 @@ long ctr;
 double T, nextNav, nextTask, nextSnap, nextScan, nextProv, nextEcho, nextMode, lastModeT, anchoredFor;
 double nextManage, lastRed = -1e9, phase, rate, nextRelease;
 readonly List<Drone> esc = new List<Drone>();
-class Contact { public Vector3D P, V; public double Size, T; public int Type; public bool Fixed; }
+class Contact { public Vector3D P, V; public double Size, T; public int Type; public bool Fixed; public string Src = ""; public double Own; }
 readonly Dictionary<long, Contact> contacts = new Dictionary<long, Contact>();
 readonly List<long> dead = new List<long>();
 readonly List<Drone> launchQ = new List<Drone>(), attackQ = new List<Drone>();
@@ -355,7 +355,7 @@ while (uni.HasPendingMessage)
 {
 var m = uni.AcceptMessage();
 long cid; int ctype; double csz; Vector3D cp, cv;
-if (net.ReadContact(m, out cid, out ctype, out csz, out cp, out cv)) { if (reg.ContainsKey(m.Source)) OnContact(cid, ctype, csz, cp, cv); continue; }
+if (net.ReadContact(m, out cid, out ctype, out csz, out cp, out cv)) { { Drone src; if (reg.TryGetValue(m.Source, out src)) OnContact(cid, ctype, csz, cp, cv, src.Call); } continue; }
 MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>> s;
 if (!net.ReadStatus(m, out s)) continue;
 Drone d;
@@ -366,7 +366,9 @@ Register(d);
 }
 bool wasDocked = d.Docked;
 d.Role = s.Item2.Item1; d.State = s.Item2.Item2; d.Task = s.Item2.Item3; d.Ack = s.Item2.Item4; d.DockId = s.Item2.Item5;
+Vector3D prevPos = d.Pos;
 d.Pos = s.Item3.Item1; d.Vel = s.Item3.Item2;
+if (d.Dir == Proto.O_ATTACK && d.Miss < 1e10) Track(d, prevPos);
 d.Batt = s.Item4.Item1; d.H2 = s.Item4.Item2; d.Cargo = s.Item4.Item3; d.Integ = s.Item4.Item4; d.Ammo = s.Item4.Item5; d.Flags = s.Item4.Item6;
 d.Seen = T;
 if (d.LostFlag)
@@ -382,7 +384,7 @@ if (d.Acked) { d.Tries = 0; d.Unresp = false; }
 while (desL.HasPendingMessage)
 {
 long id; double size; Vector3D dp, dv;
-if (net.ReadDesignation(desL.AcceptMessage(), out id, out size, out dp, out dv) ) OnContact(id, 0, size, dp, dv);
+if (net.ReadDesignation(desL.AcceptMessage(), out id, out size, out dp, out dv)) OnContact(id, 0, size, dp, dv, "datalink");
 }
 while (cmdL.HasPendingMessage)
 {
@@ -451,7 +453,11 @@ foreach (var d in reg.Values) sorted.Add(d);
 sorted.Sort((x, y) => string.Compare(x.Call, y.Call, StringComparison.Ordinal));
 foreach (var d in sorted)
 {
-if (!d.LostFlag && T - d.Seen > lostAfter) { d.LostFlag = true; Log(d.Call + " LOST"); }
+if (!d.LostFlag && T - d.Seen > lostAfter)
+{
+d.LostFlag = true; Log(d.Call + " LOST");
+if (d.Dir == Proto.O_ATTACK && d.Miss < 1e8) { Log("  last seen " + Util.Dist((d.Pos - d.MissTo).Length()) + " out at " + d.Vel.Length().ToString("0") + " m/s, " + MissText(d)); d.Miss = 1e11; }
+}
 if (d.LostFlag)
 {
 if (d.Conn != 0 && T - d.Seen > 60) docks.Release(d);
@@ -553,7 +559,7 @@ void StopSearch()
 searching = false;
 foreach (var d in reg.Values) if (d.Dir == Proto.O_SEARCH) OrderEscort(d);
 }
-void OnContact(long id, int type, double size, Vector3D p, Vector3D v)
+void OnContact(long id, int type, double size, Vector3D p, Vector3D v, string src = "seen")
 {
 Contact c;
 if (!contacts.TryGetValue(id, out c))
@@ -561,24 +567,47 @@ if (!contacts.TryGetValue(id, out c))
 contacts[id] = c = new Contact();
 Log("Contact " + Util.Dist(size) + " at " + Util.Dist((p - M.Translation).Length()) + "  " + Gps("FS Contact", p));
 }
-c.P = p; c.V = v; c.Size = size; c.Type = type; c.T = T;
+if (c.Fixed && src != c.Src && T - c.Own < 3) return;
+if (c.Fixed) c.Own = T;
+double dt = T - c.T;
+if (dt > 0.25 && dt < 5) { c.V += ((p - c.P) / dt - c.V) * 0.4; if (c.V.LengthSquared() < 2) c.V = Vector3D.Zero; }
+else if (dt >= 5) c.V = Vector3D.Zero;
+if (dt > 0.25 || c.T == 0) { c.P = p; c.T = T; }
+c.Type = type;
+if (!c.Fixed) { c.Size = size; c.Src = src; }
+}
+void Designated(long id, string src)
+{
+dead.Clear();
+foreach (var kv in contacts) if (kv.Value.Fixed && kv.Key != id) dead.Add(kv.Key);
+foreach (var k in dead) contacts.Remove(k);
+var c = contacts[id]; c.Fixed = true; c.Size = 1e6; c.Src = src; c.Own = T;
+}
+string TgtText()
+{
+Contact c;
+if (tgtId == 0 || !contacts.TryGetValue(tgtId, out c)) return "";
+Vector3D u = UpVec(), v = c.P - M.Translation, h = v - u * Vector3D.Dot(v, u);
+double b = Math.Atan2(Vector3D.Dot(h, M.Right), Vector3D.Dot(h, M.Forward)) * 180 / Math.PI;
+return c.Src + (c.Fixed ? "" : " " + Util.Dist(c.Size)) + " @ " + Util.Dist(v.Length()) + " " + Math.Abs(b).ToString("0") + (b >= 0 ? "R" : "L");
 }
 static string Gps(string name, Vector3D p) { return "GPS:" + name + ":" + p.X.ToString("0") + ":" + p.Y.ToString("0") + ":" + p.Z.ToString("0") + ":"; }
 void HubSensors()
 {
 if (wc.Ok)
 {
-foreach (var kv in wc.Threats(Me)) HubSeen(kv.Key);
+foreach (var kv in wc.Threats(Me)) HubSeen(kv.Key, "WC threat");
 var f = wc.Focus(Me.CubeGrid.EntityId);
 if (!f.IsEmpty())
 {
-OnContact(f.EntityId, (int)f.Type, Math.Max(1e5, f.BoundingBox.Size.Length()), f.Position, f.Velocity);
+OnContact(f.EntityId, (int)f.Type, f.BoundingBox.Size.Length(), f.Position, f.Velocity, "WC lock");
+if (!contacts[f.EntityId].Fixed) Designated(f.EntityId, "WC lock");
 if (f.EntityId != wcLock) Log("WC LOCK " + Util.Dist((f.Position - M.Translation).Length()) + "  " + Gps("FS Target", f.Position));
 }
 wcLock = f.IsEmpty() ? 0 : f.EntityId;
 }
-foreach (var t in hubTurrets) if (!t.Closed && t.IsWorking && t.HasTarget) HubSeen(t.GetTargetedEntity());
-foreach (var t in hubDesig) if (!t.Closed && t.IsWorking && t.HasTarget) HubSeen(t.GetTargetedEntity());
+foreach (var t in hubTurrets) if (!t.Closed && t.IsWorking && t.HasTarget) HubSeen(t.GetTargetedEntity(), "turret");
+foreach (var t in hubDesig) if (!t.Closed && t.IsWorking && t.HasTarget) HubSeen(t.GetTargetedEntity(), "turret");
 }
 bool Hostile(MyDetectedEntityInfo e)
 {
@@ -586,9 +615,10 @@ if (e.IsEmpty() || (e.Type != MyDetectedEntityType.SmallGrid && e.Type != MyDete
 var r = e.Relationship;
 return r == MyRelationsBetweenPlayerAndBlock.Enemies || (sadNeutral && (r == MyRelationsBetweenPlayerAndBlock.Neutral || r == MyRelationsBetweenPlayerAndBlock.NoOwnership));
 }
-void HubSeen(MyDetectedEntityInfo e) { if (Hostile(e)) OnContact(e.EntityId, (int)e.Type, e.BoundingBox.Size.Length(), e.Position, e.Velocity); }
+void HubSeen(MyDetectedEntityInfo e, string src) { if (Hostile(e)) OnContact(e.EntityId, (int)e.Type, e.BoundingBox.Size.Length(), e.Position, e.Velocity, src); }
 void Designate()
 {
+if (wcLock != 0) { Log("Designate: WeaponCore lock held, it is the target (unlock to designate with the camera)"); return; }
 IMyCameraBlock cam = null;
 foreach (var c in desCams) if (!c.Closed && c.IsWorking) { cam = c; break; }
 if (cam == null) { Log("Designate: no camera tagged " + desTag); return; }
@@ -597,20 +627,20 @@ var e = cam.Raycast(desRange);
 if (e.IsEmpty() || e.HitPosition == null) { Log("Designate: nothing within " + Util.Dist(desRange)); return; }
 Vector3D hp = e.HitPosition.Value;
 long id = -1;
-if (e.Type == MyDetectedEntityType.SmallGrid || e.Type == MyDetectedEntityType.LargeGrid) { id = e.EntityId; OnContact(id, (int)e.Type, Math.Max(1e5, e.BoundingBox.Size.Length()), e.Position, e.Velocity); }
-else OnContact(-1, 0, 1e6, hp, Vector3D.Zero);
-contacts[id].Fixed = true;
-Log("DESIGNATED " + Util.Dist((hp - M.Translation).Length()) + "  " + Gps("FS Target", id == -1 ? hp : e.Position));
+if (e.Type == MyDetectedEntityType.SmallGrid || e.Type == MyDetectedEntityType.LargeGrid) { id = e.EntityId; OnContact(id, (int)e.Type, e.BoundingBox.Size.Length(), e.Position, e.Velocity); }
+else OnContact(-1, 0, 0, hp, Vector3D.Zero);
+Designated(id, id == -1 ? "designated point" : "designated grid");
+Log("DESIGNATED " + (id == -1 ? (e.Type == MyDetectedEntityType.Planet ? "terrain" : "point") : "grid") + " " + Util.Dist((hp - M.Translation).Length()) + "  " + Gps("FS Target", id == -1 ? hp : e.Position));
 }
 void StrikeTick()
 {
 HubSensors();
 dead.Clear();
-foreach (var kv in contacts) if (!kv.Value.Fixed && T - kv.Value.T > sadForget) dead.Add(kv.Key);
+foreach (var kv in contacts) if (T - kv.Value.T > (kv.Value.Fixed ? (kv.Key > 0 ? 3 * sadForget : 1e9) : sadForget)) dead.Add(kv.Key);
 foreach (var id in dead) { contacts.Remove(id); if (id == tgtId) Log("Target lost or destroyed"); }
 long best = 0; Contact bc = null;
 foreach (var kv in contacts) if (bc == null || kv.Value.Size > bc.Size) { best = kv.Key; bc = kv.Value; }
-if (bc != null && best != tgtId) { tgtId = best; Log("TARGET " + Util.Dist(bc.Size) + " at " + Util.Dist((bc.P - M.Translation).Length()) + (loitering ? "" : ": run loiter")); if (loitering) Loiter(); }
+if (bc != null && best != tgtId) { tgtId = best; Log("TARGET " + TgtText() + "  " + Gps("FS Target", bc.P) + (loitering ? "" : ": run loiter")); if (loitering) Loiter(); }
 if (bc == null) tgtId = 0;
 if (searching)
 {
@@ -632,7 +662,7 @@ foreach (var d in reg.Values)
 {
 if (d.LostFlag) continue;
 Contact k;
-if ((d.Dir == Proto.O_LOITER || d.Dir == Proto.O_ATTACK) && d.Id == tgtId && (d.A - bc.P).LengthSquared() > 50 * 50) Issue(d, d.Dir, bc.P, bc.V, d.C, tgtId);
+if ((d.Dir == Proto.O_LOITER || d.Dir == Proto.O_ATTACK) && d.Id == tgtId && ((d.A - bc.P).LengthSquared() > 50 * 50 || (d.B - bc.V).LengthSquared() > 9)) Issue(d, d.Dir, bc.P, bc.V, d.C, tgtId);
 else if (d.Dir == Proto.O_INTERCEPT)
 {
 if (!contacts.TryGetValue(d.Id, out k)) Ring(d);
@@ -694,6 +724,27 @@ Vector3D h = d.Pos - c.P, u = UpVec();
 h -= u * Vector3D.Dot(h, u);
 double r = Math.Min(c.Size, 1e4) * 0.3;
 Issue(d, Proto.O_ATTACK, c.P, c.V, Util.Norm(h) * (c.Size >= 1e5 ? 0 : r), tgtId);
+d.Miss = 1e9; d.From = d.Pos; d.Passed = false;
+Log("DIVE " + d.Call + " from " + Util.Dist((d.Pos - c.P).Length()) + (c.V.LengthSquared() > 0 ? ", target moving " + c.V.Length().ToString("0") + " m/s" : ""));
+}
+void Track(Drone d, Vector3D a)
+{
+Contact c;
+if (d.Miss > 1e10 || !contacts.TryGetValue(d.Id, out c)) return;
+Vector3D s = d.Pos - a;
+double l = s.LengthSquared(), k = l > 1e-6 ? Util.Clamp(Vector3D.Dot(c.P - a, s) / l, 0, 1) : 1;
+Vector3D off = a + s * k - c.P;
+if (off.Length() < d.Miss) { d.Miss = off.Length(); d.MissOff = off; d.MissTo = c.P; }
+else if (!d.Passed && (d.Pos - c.P).Length() > d.Miss + 400) { d.Passed = true; Log(d.Call + " MISSED: " + MissText(d)); }
+}
+string MissText(Drone d)
+{
+Vector3D u = UpVec(), f = d.MissTo - d.From;
+f = Util.Norm(f - u * Vector3D.Dot(f, u));
+Vector3D r = Vector3D.Cross(f, u), o = d.MissOff;
+double al = Vector3D.Dot(o, f), ri = Vector3D.Dot(o, r), up = Vector3D.Dot(o, u);
+return "closest " + Util.Dist(d.Miss) + ": " + Util.Dist(Math.Abs(al)) + (al >= 0 ? " long, " : " short, ")
++ Util.Dist(Math.Abs(ri)) + (ri >= 0 ? " right, " : " left, ") + Util.Dist(Math.Abs(up)) + (up >= 0 ? " above" : " below");
 }
 void Attack(int n, bool all)
 {
@@ -931,8 +982,8 @@ if (t.Length > 1 && t[1].ToLower() == "clear") { contacts.Clear(); tgtId = 0; Lo
 {
 Vector3D gp;
 if (!ParseGps(raw.Substring(raw.IndexOf(' ') + 1).Trim(), out gp)) { Log("target GPS:name:x:y:z: | target x y z | target clear"); break; }
-OnContact(-1, 0, 1e6, gp, Vector3D.Zero);
-contacts[-1].Fixed = true;
+OnContact(-1, 0, 0, gp, Vector3D.Zero);
+Designated(-1, "GPS");
 Log("DESIGNATED " + Gps("FS Target", gp));
 }
 break;
@@ -1122,7 +1173,7 @@ sb.Append("H|").Append(mode).Append('|').Append(cfgMode).Append('|').Append(mode
 .Append('|').Append(hasWp ? 1 : 0).Append('|').Append((int)(perf.Avg * 1000)).Append('|').Append(online)
 .Append('|').Append(Util.Clean(Me.CubeGrid.CustomName))
 .Append('|').Append(alert).Append('|').Append(alertOverride >= 0 ? 1 : 0).Append('|').Append(safe ? 1 : 0).Append('|').Append(defense ? 1 : 0)
-.Append('|').Append(jumpState).Append('|').Append((searching ? 1 : 0) | (tgtId != 0 ? 2 : 0) | (loitering ? 4 : 0))
+.Append('|').Append(jumpState).Append('|').Append((searching ? 1 : 0) | (tgtId != 0 ? 2 : 0) | (loitering ? 4 : 0)).Append('|').Append(Util.Clean(TgtText()))
 .Append('\n');
 foreach (var d in sorted)
 {
@@ -1202,6 +1253,9 @@ public bool Unresp;
 public long Conn;
 public bool Managed;
 public bool Held;
+public double Miss = 1e11;
+public Vector3D MissOff, MissTo, From;
+public bool Passed;
 public bool Docked { get { return (Flags & Proto.F_DOCKED) != 0; } }
 public bool Acked { get { return Seq == 0 || Ack == Seq; } }
 }

@@ -31,7 +31,7 @@ bool facOk, pRepair, pRearm;
 int facSt, facProg, facBuilt, facDemand, pCharging, pMaxC, pReserve, pStock, pLive, pRepairN, pRearmN;
 string facMsg = "";
 bool hAutoRtb, hWp, hAlertForced, hSafe, hDefense;
-string hForm = "", hName = "";
+string hForm = "", hName = "", hTgt = "";
 readonly List<Row> rows = new List<Row>();
 readonly List<string> evts = new List<string>();
 string selCall = "";
@@ -207,7 +207,7 @@ switch (f[0])
 case "H":
 hMode = I(f, 1); hCfgMode = I(f, 2); hForm = f.Length > 3 ? f[3] : ""; hSpacing = I(f, 4); hAutoRtb = I(f, 5) == 1;
 hFree = I(f, 6); hDocks = I(f, 7); hWp = I(f, 8) == 1; hPerfUs = I(f, 9); hOnline = I(f, 10); hName = f.Length > 11 ? f[11] : "";
-hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16); hSad = I(f, 17);
+hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16); hSad = I(f, 17); hTgt = f.Length > 18 ? f[18] : "";
 break;
 case "D":
 {
@@ -562,7 +562,7 @@ foreach (var r in rows) { if (r.LostS >= 0) continue; if (r.State == Proto.S_DOC
 float fy = y0 + H - 26 * k;
 Box(ref f, x0, fy - 4 * k, W, 2 * k, C_PANEL);
 bool fresh = T - defMsgT < 4;
-Txt(ref f, fresh ? defMsg : "OUT " + outN + "   DOCKED " + dock + "   arrows: pick, apply: send", x0 + 8 * k, fy, 0.48f * k, fresh ? C_GOOD : C_DIM);
+Txt(ref f, fresh ? defMsg : hTgt.Length > 0 ? "TGT " + hTgt : "OUT " + outN + "   DOCKED " + dock + "   no target", x0 + 8 * k, fy, 0.48f * k, fresh ? C_GOOD : hTgt.Length > 0 ? C_ORANGE : C_DIM);
 f.Dispose();
 }
 void DrawHangar(IMyTextSurface s)

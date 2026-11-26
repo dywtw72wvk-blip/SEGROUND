@@ -371,7 +371,7 @@ void DrawDefense(IMyTextSurface s)
     float fy = y0 + H - 26 * k;
     Box(ref f, x0, fy - 4 * k, W, 2 * k, C_PANEL);
     bool fresh = T - defMsgT < 4;
-    Txt(ref f, fresh ? defMsg : "OUT " + outN + "   DOCKED " + dock + "   arrows: pick, apply: send", x0 + 8 * k, fy, 0.48f * k, fresh ? C_GOOD : C_DIM);
+    Txt(ref f, fresh ? defMsg : hTgt.Length > 0 ? "TGT " + hTgt : "OUT " + outN + "   DOCKED " + dock + "   no target", x0 + 8 * k, fy, 0.48f * k, fresh ? C_GOOD : hTgt.Length > 0 ? C_ORANGE : C_DIM);
     f.Dispose();
 }
 

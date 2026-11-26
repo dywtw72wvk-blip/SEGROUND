@@ -536,7 +536,7 @@ fl.Aim(ctl.WorldMatrix, holdFwd, u);
 arrived = along > depth - 150;
 }
 bool Fix() { return det.EntityId == tId && T - detT < 2; }
-Vector3D AtkPos() { return Fix() ? det.Position + (Vector3D)det.Velocity * (T - detT) : tA + tB * Math.Min(20, T - atkT); }
+Vector3D AtkPos() { return Fix() ? det.Position + (Vector3D)det.Velocity * (T - detT) : tA + tB * Math.Min(5, T - atkT); }
 Vector3D AtkVel() { return Fix() ? (Vector3D)det.Velocity : tB; }
 void FlyLoiter()
 {
@@ -547,8 +547,7 @@ Vector3D rad = e1 * Math.Cos(a) + e2 * Math.Sin(a), tan = e2 * Math.Cos(a) - e1 
 Vector3D slot = tp + (u * Math.Cos(th) + rad * Math.Sin(th)) * R;
 fl.FlyTo(Lift(slot), tv + tan * (w * R * Math.Sin(th)), maxSpeed);
 atkAz = rad;
-Vector3D to = Util.Norm(tp - fl.Pos);
-fl.Aim(ctl.WorldMatrix, to, AimUp(to, u));
+AimLevel(tp - fl.Pos, u);
 arrived = (slot - fl.Pos).Length() < 100;
 }
 void FlyAttack()
@@ -557,7 +556,7 @@ Vector3D tp = AtkPos() + tC, tv = AtkVel(), u = UpRef(ctl.WorldMatrix.Up), to = 
 double dist = to.Length();
 if (atkAz.LengthSquared() < 0.5) { Vector3D h = -to - u * Vector3D.Dot(-to, u); atkAz = h.LengthSquared() > 1 ? Util.Norm(h) : Util.Norm(Util.Perp(u)); }
 double closing = Math.Max(20, Vector3D.Dot(fl.Vel - tv, Util.Norm(to)));
-Vector3D aim = tp + tv * Math.Min(10, dist / closing), dir = Util.Norm(aim - fl.Pos);
+Vector3D aim = tp + tv * Math.Min(6, dist / closing), dir = Util.Norm(aim - fl.Pos);
 Vector3D side = Util.Norm(Vector3D.Cross(dir, atkAz));
 aim += side * (weave * Util.Clamp((dist - armDist) / Math.Max(1, standoff - armDist), 0, 1) * Math.Sin(T * 1.6 + tC.X * 0.01));
 Terminal(aim, dir, tv, dist, u, Fix() ? detSize * 0.4 : 0);
@@ -565,7 +564,7 @@ Terminal(aim, dir, tv, dist, u, Fix() ? detSize * 0.4 : 0);
 void Terminal(Vector3D aim, Vector3D dir, Vector3D tv, double dist, Vector3D u, double size)
 {
 fl.FlyTo(aim + dir * 300, tv, maxSpeed);
-fl.Aim(ctl.WorldMatrix, dir, AimUp(dir, u));
+AimLevel(dir, u);
 bool arm = dist < armDist;
 foreach (var w in heads) if (!w.Closed && w.IsArmed != arm) w.IsArmed = arm;
 if (arm && dist < fuse + size) foreach (var w in heads) if (!w.Closed) w.Detonate();
@@ -585,10 +584,16 @@ foreach (var w in heads) if (!w.Closed) w.IsArmed = true;
 return;
 }
 double closing = Math.Max(20, Vector3D.Dot(fl.Vel - tv, Util.Norm(to)));
-Vector3D aim = tp + tv * Math.Min(10, dist / closing);
+Vector3D aim = tp + tv * Math.Min(6, dist / closing);
 Terminal(aim, Util.Norm(aim - fl.Pos), tv, dist, u, Fix() ? detSize * 0.4 : 0);
 }
-Vector3D AimUp(Vector3D f, Vector3D u) { return Math.Abs(Vector3D.Dot(f, u)) > 0.7 ? atkAz : u; }
+void AimLevel(Vector3D dir, Vector3D u)
+{
+Vector3D h = dir - u * Vector3D.Dot(dir, u);
+if (h.LengthSquared() < 0.01) h = -atkAz;
+if (h.LengthSquared() > 0.01) holdFwd = Util.Norm(h);
+fl.Aim(ctl.WorldMatrix, holdFwd, u);
+}
 static readonly float[] Pitches = { -6, -15, -28 };
 void Lidar()
 {
