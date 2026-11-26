@@ -18,6 +18,18 @@ IMyBroadcastListener snapL;
 readonly List<IMyTextSurface> fleetSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> mapSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> hangarSurf = new List<IMyTextSurface>();
+readonly List<IMyTextSurface> defSurf = new List<IMyTextSurface>();
+string defTag = "FS:Defense", defMsg = "";
+int defItem, defOpt;
+double defMsgT = -1e9;
+// Defense menu: up/down = item, left/right = value, apply = send. Commands are "<cmd> <value>".
+static readonly string[] DefNames = { "SEARCH", "DESIGNATE", "STRIKE", "ALERT", "DEFENSE", "FORMATION", "SCRAMBLE", "RECALL" };
+static readonly string[] DefCmds = { "search", "designate", "", "alert", "defense", "formation", "scramble", "recall" };
+static readonly string[] StrikeCmds = { "loiter", "attack", "attackall", "abort" };
+static readonly string[][] DefOpts = {
+    new[] { "START", "STOP" }, new[] { "GO" }, new[] { "LOITER", "ATTACK 1", "ATTACK ALL", "ABORT" },
+    new[] { "AUTO", "GREEN", "YELLOW", "RED" }, new[] { "ON", "OFF" },
+    new[] { "WEDGE", "LINE", "COLUMN", "RING", "SPHERE" }, new[] { "GO" }, new[] { "GO" } };
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
 readonly HashSet<IMyTextSurface> compactSurf = new HashSet<IMyTextSurface>();   // cockpit screens
 string fleetTag = "FS:Fleet", mapTag = "FS:Map", hangarTag = "FS:Hangar";
@@ -26,7 +38,7 @@ bool flip, cockpitCompact, cpt;
 float cockpitZoom = 1;
 
 // snapshot from Hub Core
-int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert, hJump;
+int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert, hJump, hSad;
 // hangar
 readonly List<DockRow> dockRows = new List<DockRow>();
 bool facOk, pRepair, pRearm;
@@ -72,6 +84,7 @@ void LoadConfig()
     fleetTag = cfg.S("FleetTag", "FS:Fleet");
     mapTag = cfg.S("MapTag", "FS:Map");
     hangarTag = cfg.S("HangarTag", "FS:Hangar");
+    defTag = cfg.S("DefenseTag", "FS:Defense");
     cockpitCompact = cfg.B("CockpitCompact", true);   // big-text layout on cockpit screens
     cockpitZoom = (float)Math.Max(0.5, Math.Min(3, cfg.D("CockpitZoom", 1.0)));
     cfg.Save();
@@ -86,6 +99,7 @@ void Scan()
     Collect(fleetTag, fleetSurf);
     Collect(mapTag, mapSurf);
     Collect(hangarTag, hangarSurf);
+    Collect(defTag, defSurf);
 }
 
 void Collect(string tag, List<IMyTextSurface> into)
@@ -140,8 +154,10 @@ bool Linked() { return T - snapT < 3; }
 // ---------------------------------------------------------------- input
 void Input(string arg)
 {
+    string a = arg.ToLower();
+    if (a.StartsWith("def ")) { DefInput(a.Substring(4).Trim()); return; }
     int n = rows.Count + 1, cur = Cursor();
-    switch (arg.ToLower())
+    switch (a)
     {
         case "up": SetCursor((cur - 1 + n) % n); break;
         case "down": SetCursor((cur + 1) % n); break;
@@ -156,6 +172,38 @@ void Input(string arg)
             break;
         case "back": selCall = ""; break;
         default: Send(ReplaceSel(arg)); break;
+    }
+}
+
+void DefInput(string a)
+{
+    int n = DefNames.Length;
+    if (a == "up") { defItem = (defItem - 1 + n) % n; defOpt = DefCurrent(defItem); }
+    else if (a == "down") { defItem = (defItem + 1) % n; defOpt = DefCurrent(defItem); }
+    else if (a == "left" || a == "right")
+    {
+        int m = DefOpts[defItem].Length;
+        defOpt = (defOpt + (a == "left" ? m - 1 : 1)) % m;
+    }
+    else if (a == "apply" || a == "select")
+    {
+        string v = DefOpts[defItem][defOpt];
+        string c = DefCmds[defItem].Length == 0 ? StrikeCmds[defOpt] : DefCmds[defItem] + (v == "GO" ? "" : " " + v.ToLower());
+        Send(c);
+        defMsg = "sent: " + c; defMsgT = T;
+    }
+}
+
+// Option index matching the hub's current state (so the selector starts at "now")
+int DefCurrent(int i)
+{
+    switch (i)
+    {
+        case 0: return (hSad & 1) != 0 ? 1 : 0;
+        case 3: return hAlertForced ? hAlert + 1 : 0;
+        case 4: return hDefense ? 0 : 1;
+        case 5: return Math.Max(0, Array.IndexOf(DefOpts[5], hForm));
+        default: return 0;
     }
 }
 
@@ -198,7 +246,7 @@ void Parse(string s)
             case "H":
                 hMode = I(f, 1); hCfgMode = I(f, 2); hForm = f.Length > 3 ? f[3] : ""; hSpacing = I(f, 4); hAutoRtb = I(f, 5) == 1;
                 hFree = I(f, 6); hDocks = I(f, 7); hWp = I(f, 8) == 1; hPerfUs = I(f, 9); hOnline = I(f, 10); hName = f.Length > 11 ? f[11] : "";
-                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16);
+                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16); hSad = I(f, 17);
                 break;
             case "D":
                 {
@@ -240,4 +288,5 @@ void Render()
     foreach (var s in fleetSurf) { cpt = compactSurf.Contains(s); DrawFleet(s); }
     foreach (var s in mapSurf) { cpt = compactSurf.Contains(s); DrawMap(s); }
     foreach (var s in hangarSurf) { cpt = compactSurf.Contains(s); DrawHangar(s); }
+    foreach (var s in defSurf) { cpt = compactSurf.Contains(s); DrawDefense(s); }
 }

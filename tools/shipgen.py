@@ -66,6 +66,10 @@ B = {
     "s_connector": ("ShipConnector", "ConnectorMedium", "Small", (3, 3, 2), 685.2, 0, False),
     "s_merge":     ("MergeBlock", "SmallShipMergeBlock", "Small", (1, 3, 3), 152.2, 0, False),
     "s_antenna":   ("RadioAntenna", "SmallBlockRadioAntenna", "Small", (1, 1, 2), 72.2, 0, False),
+    "s_warhead":   ("Warhead", "SmallWarhead", "Small", (1, 1, 1), 104.5, 0, False),
+    "s_camera":    ("CameraBlock", "SmallCameraBlock", "Small", (1, 1, 1), 40.6, 0, False),
+    "s_ai_off":    ("OffensiveCombatBlock", "SmallOffensiveCombat", "Small", (1, 1, 1), 156.0, 0, False),
+    "s_ai_fly":    ("FlightMovementBlock", "SmallFlightMovement", "Small", (1, 1, 1), 156.0, 0, False),
     "s_gatling":   ("LargeGatlingTurret", "SmallGatlingTurret", "Small", (5, 5, 5), 692.0, 0, False),
     # large grid
     "l_armor":     ("CubeBlock", "LargeBlockArmorBlock", "Large", (1, 1, 1), 500, 0, False),
@@ -81,6 +85,7 @@ B = {
     "l_connector": ("ShipConnector", "Connector", "Large", (1, 1, 1), 3564.0, 0, False),
     "l_antenna":   ("RadioAntenna", "LargeBlockRadioAntenna", "Large", (1, 6, 2), 3401.6, 0, False),
     "l_gatling":   ("LargeGatlingTurret", "", "Large", (3, 3, 3), 1428.0, 0, False),
+    "l_camera":    ("CameraBlock", "LargeCameraBlock", "Large", (1, 1, 1), 92.0, 0, False),
 }
 
 
@@ -183,7 +188,8 @@ class Ship:
             if b["name"]:
                 s.append(f"              <CustomName>{escape(b['name'])}</CustomName>")
             if b["extra"]:
-                s.append("              " + b["extra"])
+                # {EID:block name} -> that block's entity id in this copy of the ship (toolbar targets)
+                s.append("              " + re.sub(r"\{EID:([^}]*)\}", lambda m: str(self.eid(inst, self.index_of(m.group(1)))), b["extra"]))
             if i in extra:
                 s.append("              " + extra[i])
             if b["program"]:
@@ -247,20 +253,15 @@ def blueprint_xml(name, grids):
 # FS Buster Atmo (small grid): atmospheric defense drone
 #   core box x2..6, y5..9, z2..13 (5 x 5 x 12 small blocks)
 #   1 large atmo lift thruster on the centre of mass, 6 small atmo for
-#   horizontal control (no down thrust: gravity does that), 2 gatling
-#   turrets (top + belly), nose connector for docking, merge fin for
+#   horizontal control (no down thrust: gravity does that), 4 warheads
+#   (kamikaze payload), 2 nose cameras (lidar), nose connector, merge fin for
 #   factory printing, 2 batteries, 2 gyros.
 # ======================================================================
-# Pre-loaded turret ammo. SmallGatlingTurret inventory is 0.08 m3 and a
-# NATO_25x184mm magazine is 16 L / 35 kg, so 5 fill it. Without ammo the hub
-# holds a Buster docked (auto-RTB would recall it at 0% ammo). Same
-# ComponentContainer layout the game writes for a turret in a save.
-AMMO_MAGS = 5
-AMMO_MASS = 2 * AMMO_MAGS * 35     # kg, both turrets
+# 5 NATO_25x184mm magazines fill a SmallGatlingTurret (0.08 m3); same layout the game saves
 TURRET_AMMO = (
     "<ComponentContainer><Components><ComponentData><TypeId>MyInventoryBase</TypeId>"
     "<Component xsi:type=\"MyObjectBuilder_Inventory\"><CanPutItems>true</CanPutItems><Items>"
-    "<MyObjectBuilder_InventoryItem><Amount>" + str(AMMO_MAGS) + "</Amount>"
+    "<MyObjectBuilder_InventoryItem><Amount>5</Amount>"
     "<PhysicalContent xsi:type=\"MyObjectBuilder_AmmoMagazine\"><SubtypeName>NATO_25x184mm</SubtypeName>"
     "<ProjectilesCount>0</ProjectilesCount></PhysicalContent><ItemId>0</ItemId></MyObjectBuilder_InventoryItem>"
     "</Items><nextItemId>1</nextItemId><Volume>0.08</Volume><Mass>9223372036854.775807</Mass>"
@@ -268,31 +269,88 @@ TURRET_AMMO = (
     "<RemoveEntityOnEmpty>false</RemoveEntityOnEmpty></Component></ComponentData></Components></ComponentContainer>")
 
 
-def buster():
-    s = Ship("FS Buster Atmo", "Small")
+def toolbar(slots):
+    """Ship-controller toolbar: [(slot index, block name, Run argument | "!Action")], same layout the
+    game saves. Slots 0-8 are page 1, 9-17 page 2. The block id is filled in per ship copy."""
+    def item(i, name, arg):
+        if arg.startswith("!"):
+            act = f"<Action>{arg[1:]}</Action>"
+        else:
+            act = (f"<Action>Run</Action><Parameters><MyObjectBuilder_ToolbarItemActionParameter><TypeCode>String</TypeCode>"
+                   f"<Value>{escape(arg)}</Value></MyObjectBuilder_ToolbarItemActionParameter></Parameters>")
+        return (f"<Slot><Index>{i}</Index><Item /><Data xsi:type=\"MyObjectBuilder_ToolbarItemTerminalBlock\">"
+                f"{act}<BlockEntityId>{{EID:{name}}}</BlockEntityId></Data></Slot>")
+    items = "".join(item(i, name, arg) for i, name, arg in slots)
+    return (f"<Toolbar><ToolbarType>Character</ToolbarType><SelectedSlot xsi:nil=\"true\" />"
+            f"<Slots>{items}</Slots><SlotsGamepad /></Toolbar>")
+
+
+# AI Offensive: Intercept pattern (id 3), closest target, activated. It only searches until the
+# script hands it a launched drone to intercept (then the AI Flight block is switched on).
+AI_OFFENSIVE = (
+    "<ComponentContainer><Components>"
+    "<ComponentData><TypeId>MyOffensiveCombatIntercept</TypeId><Component xsi:type=\"MyObjectBuilder_OffensiveCombatIntercept\">"
+    "<Guidance>Basic</Guidance><OverrideCollisionAvoidance>true</OverrideCollisionAvoidance></Component></ComponentData>"
+    "<ComponentData><TypeId>MyAiBlockComponent</TypeId><Component xsi:type=\"MyObjectBuilder_AiBlockComponent\">"
+    "<IsActivated>true</IsActivated></Component></ComponentData>"
+    "</Components></ComponentContainer>"
+    "<TargetPriority>Closest</TargetPriority><SelectedAttackPattern>3</SelectedAttackPattern><CanTargetCharacters>false</CanTargetCharacters>")
+AI_FLIGHT = (
+    "<ComponentContainer><Components><ComponentData><TypeId>MyAiBlockComponent</TypeId>"
+    "<Component xsi:type=\"MyObjectBuilder_AiBlockComponent\"><IsActivated>true</IsActivated></Component>"
+    "</ComponentData></Components></ComponentContainer><Enabled>false</Enabled>")
+
+
+def drone_hull(s):
+    """The shared small-grid airframe: thrusters, control, power, nose connector and cameras."""
     s.add("s_atmo_big", (3, 3, 6), fwd="Down", up="Forward", name="Lift Thruster")
-    s.add("s_gatling", (2, 10, 6), fwd="Forward", up="Up", name="Gatling Turret Top", extra=TURRET_AMMO)
-    s.add("s_gatling", (2, 0, 9), fwd="Forward", up="Down", name="Gatling Turret Belly", extra=TURRET_AMMO)
-    s.add("s_merge", (4, 2, 3), name="Merge Block (factory mount)")
+    s.add("s_camera", (2, 7, 1), fwd="Forward", up="Up", name="Camera L")
+    s.add("s_camera", (6, 7, 1), fwd="Forward", up="Up", name="Camera R")
     s.add("s_connector", (3, 6, 0), fwd="Forward", up="Up", name="Connector")
-    # horizontal thrusters (Forward = exhaust direction; pushes the opposite way)
     s.add("s_atmo", (1, 7, 11), fwd="Backward", name="Thruster Forward L")
     s.add("s_atmo", (7, 7, 11), fwd="Backward", name="Thruster Forward R")
     s.add("s_atmo", (1, 7, 2), fwd="Forward", name="Thruster Brake L")
     s.add("s_atmo", (7, 7, 2), fwd="Forward", name="Thruster Brake R")
-    s.add("s_atmo", (7, 6, 7), fwd="Right", name="Thruster Left")     # exhaust right -> pushes left
-    s.add("s_atmo", (-1, 6, 7), fwd="Left", name="Thruster Right")    # exhaust left -> pushes right
-    # control & power
+    s.add("s_atmo", (7, 6, 7), fwd="Right", name="Thruster Left")
+    s.add("s_atmo", (-1, 6, 7), fwd="Left", name="Thruster Right")
     s.add("s_rc", (4, 9, 3), name="Remote Control")
-    s.add("s_pb", (2, 9, 3), name="Programmable Block [Fleet Drone]", program="Drone")
     s.add("s_gyro", (4, 5, 3), name="Gyroscope 1")
     s.add("s_gyro", (4, 5, 11), name="Gyroscope 2")
     s.add("s_battery", (3, 8, 4), name="Battery 1")
     s.add("s_battery", (3, 8, 10), name="Battery 2")
-    s.add("s_antenna", (2, 10, 12), name="Antenna", extra="<BroadcastRadius>3000</BroadcastRadius>")
-    # structure: thruster intake mounts, then fill the core
+    s.add("s_antenna", (2, 10, 12), name="Antenna", extra="<BroadcastRadius>5000</BroadcastRadius>")   # small-grid max
     for c in [(1, 7, 10), (7, 7, 10), (1, 7, 5), (7, 7, 5)]:
         s.add("s_armor", c)
+
+
+# ======================================================================
+# FS Spotter Atmo (small grid): recon / designation drone. The Buster
+# airframe without payload, with a small Gatling turret on top: its lock (vanilla)
+# or WeaponCore's threat list for its grid (WeaponCore worlds) is the spotter's
+# sensor, plus the nose cameras. Its PB runs the Drone script with Role=Spotter.
+# ======================================================================
+def spotter():
+    s = Ship("FS Spotter Atmo", "Small")
+    drone_hull(s)
+    s.add("s_gatling", (2, 10, 6), fwd="Forward", up="Up", name="Gatling Turret [Sensor]", extra=TURRET_AMMO)
+    s.add("s_pb", (2, 9, 3), name="Programmable Block [Fleet Drone]", program="Drone",
+          extra="<CustomData>[Drone]\nRole=Spotter\n</CustomData>")
+    s.fill((2, 5, 2), (6, 9, 13), "s_armor")
+    s.check_exhaust(depth=6)
+    return s
+
+
+def buster():
+    s = Ship("FS Buster Atmo", "Small")
+    drone_hull(s)
+    # payload: 4 warheads inside the hull (armed only in the dive or an intercept)
+    for i, c in enumerate([(2, 6, 7), (6, 6, 7), (2, 8, 8), (6, 8, 8)]):
+        s.add("s_warhead", c, name=f"Warhead {i + 1}")
+    # intercept: AI Offensive (Intercept) + AI Flight (off until the script hands over)
+    s.add("s_ai_off", (2, 6, 11), name="AI Offensive [Intercept]", extra=AI_OFFENSIVE)
+    s.add("s_ai_fly", (6, 6, 11), name="AI Flight [Intercept]", extra=AI_FLIGHT)
+    s.add("s_merge", (4, 2, 3), name="Merge Block (factory mount)")
+    s.add("s_pb", (2, 9, 3), name="Programmable Block [Fleet Drone]", program="Drone")
     s.fill((2, 5, 2), (6, 9, 13), "s_armor")
     s.check_exhaust(depth=6)
     return s
@@ -330,10 +388,19 @@ def carrier():
     s.add("l_pb", (3, 2, 11), name="Programmable Block [Fleet Core]", program="HubCore")
     s.add("l_pb", (5, 2, 11), name="Programmable Block [Fleet UI]", program="HubUI")
     # deck: cockpit (hub reference + UI screens), turrets, antenna
-    s.add("l_cockpit", (4, 6, 1), fwd="Forward", up="Up", name="Cockpit [FS:Fleet:0] [FS:Map:1] [FS:Hangar:2]")
+    # toolbar page 1: Defense menu (screen 3), page 2: Fleet screen (screen 0)
+    ui = "Programmable Block [Fleet UI]"
+    nav = ["up", "down", "left", "right", "apply"]
+    strike = [(5, "Camera [Designator]", "!View"), (6, ui, "designate"), (7, ui, "loiter"), (8, ui, "attack")]
+    bar = toolbar([(i, ui, "def " + a) for i, a in enumerate(nav)] + strike +
+                  [(9 + i, ui, a) for i, a in enumerate(nav)] + [(14, ui, "attackall"), (15, ui, "abort"), (16, ui, "search")])
+    s.add("l_cockpit", (4, 6, 1), fwd="Forward", up="Up",
+          name="Cockpit [FS:Fleet:0] [FS:Map:1] [FS:Hangar:2] [FS:Defense:3]", extra=bar)
     s.add("l_gatling", (3, 6, 4), name="Gatling Turret Fore")
     s.add("l_gatling", (3, 6, 18), name="Gatling Turret Aft")
-    s.add("l_antenna", (7, 6, 21), name="Antenna", extra="<BroadcastRadius>5000</BroadcastRadius>")
+    # designation: a camera for `designate`; WeaponCore's HUD lock and threat list feed strikes too
+    s.add("l_camera", (6, 6, 0), fwd="Forward", up="Up", name="Camera [Designator]")
+    s.add("l_antenna", (7, 6, 21), name="Antenna", extra="<BroadcastRadius>20000</BroadcastRadius>")   # reaches Busters across the S&D area
     # docking connectors on the deck edges, facing outward
     for i, z in enumerate((4, 9, 14, 19)):
         s.add("l_connector", (-1, 5, z), fwd="Left", up="Up", name=f"Connector [Dock] L{i + 1}")
@@ -441,11 +508,12 @@ def main():
     summary = []
     b = buster()
     summary += report(b)[0]
-    summary += report(b, cargo=AMMO_MASS, note=f" (+{AMMO_MASS} kg pre-loaded ammo)")[0][1:2]
+    sp = spotter()
+    summary += report(sp)[0]
     c = carrier()
     summary += report(c)[0]
-    summary += report(c, cargo=8 * (b.stats()["mass"] + AMMO_MASS), note=" (+8 Busters docked)")[0][1:2]
-    for s in (b, c):
+    summary += report(c, cargo=8 * b.stats()["mass"], note=" (+8 Busters docked)")[0][1:2]
+    for s in (b, sp, c):
         d = OUT / s.name
         d.mkdir(exist_ok=True)
         (d / "bp.sbc").write_text(s.xml(code), encoding="utf-8")

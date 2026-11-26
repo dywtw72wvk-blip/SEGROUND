@@ -27,6 +27,11 @@ namespace VRageMath
     {
         public double X, Y, Z;
         public Vector3D(double x, double y, double z) { X = x; Y = y; Z = z; }
+        public Vector3D(double v) { X = Y = Z = v; }
+        public Vector3D(Vector3I v) { X = v.X; Y = v.Y; Z = v.Z; }
+        public static Vector3D Min(Vector3D a, Vector3D b) { return new Vector3D(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Min(a.Z, b.Z)); }
+        public static Vector3D Max(Vector3D a, Vector3D b) { return new Vector3D(Math.Max(a.X, b.X), Math.Max(a.Y, b.Y), Math.Max(a.Z, b.Z)); }
+        public static Vector3D Transform(Vector3D v, MatrixD m) { return v; }
         public static readonly Vector3D Zero = new Vector3D(0, 0, 0);
         public static readonly Vector3D Up = new Vector3D(0, 1, 0);
         public static readonly Vector3D Right = new Vector3D(1, 0, 0);
@@ -66,6 +71,8 @@ namespace VRageMath
     }
 
     public struct BoundingSphereD { public Vector3D Center; public double Radius; }
+    public struct BoundingBoxD { public Vector3D Min, Max; public Vector3D Size { get { return Max - Min; } } }
+    public struct Vector3I { public int X, Y, Z; }
 
     public static class Base6Directions
     {
@@ -128,6 +135,9 @@ namespace VRage.Game.ModAPI.Ingame
         bool IsStatic { get; }
         BoundingSphereD WorldVolume { get; }
         string CustomName { get; set; }
+        float GridSize { get; }
+        Vector3I Min { get; }
+        Vector3I Max { get; }
     }
 
     public interface IMyInventory { MyFixedPoint CurrentVolume { get; } MyFixedPoint MaxVolume { get; } }
@@ -246,6 +256,7 @@ namespace Sandbox.ModAPI.Ingame
         string CustomName { get; set; }
         string CustomData { get; set; }
         bool IsSameConstructAs(IMyTerminalBlock other);
+        Sandbox.ModAPI.Interfaces.ITerminalProperty GetProperty(string id);
     }
 
     public interface IMyFunctionalBlock : IMyTerminalBlock { bool Enabled { get; set; } }
@@ -275,7 +286,9 @@ namespace Sandbox.ModAPI.Ingame
         MyShipVelocities GetShipVelocities();
         Vector3D GetNaturalGravity();
         MyShipMass CalculateShipMass();
+        bool TryGetPlanetElevation(MyPlanetElevation detail, out double elevation);
     }
+    public enum MyPlanetElevation { Sealevel, Surface }
     public interface IMyRemoteControl : IMyShipController { }
 
     public interface IMyThrust : IMyFunctionalBlock { float ThrustOverridePercentage { get; set; } float MaxEffectiveThrust { get; } }
@@ -292,11 +305,30 @@ namespace Sandbox.ModAPI.Ingame
     public interface IMyCargoContainer : IMyTerminalBlock { }
     public interface IMyRadioAntenna : IMyFunctionalBlock { bool EnableBroadcasting { get; set; } float Radius { get; set; } }
     public interface IMyUserControllableGun : IMyFunctionalBlock { }
-    public interface IMyLargeTurretBase : IMyUserControllableGun { bool HasTarget { get; } }
+    public interface IMyLargeTurretBase : IMyUserControllableGun { bool HasTarget { get; } MyDetectedEntityInfo GetTargetedEntity(); }
+    public interface IMyCameraBlock : IMyFunctionalBlock
+    {
+        bool EnableRaycast { get; set; }
+        double AvailableScanRange { get; }
+        bool CanScan(double distance);
+        MyDetectedEntityInfo Raycast(double distance, float pitch = 0, float yaw = 0);
+        MyDetectedEntityInfo Raycast(Vector3D targetPos);
+    }
+    public interface IMyTurretControlBlock : IMyFunctionalBlock { bool HasTarget { get; } MyDetectedEntityInfo GetTargetedEntity(); }
+    public interface IMySearchEnemyComponent { long FoundEnemyId { get; } }
+    public interface IMyOffensiveCombatBlock : IMyFunctionalBlock { IMySearchEnemyComponent SearchEnemyComponent { get; } }
+    public interface IMyFlightMovementBlock : IMyFunctionalBlock { }
+    public interface IMyWarhead : IMyTerminalBlock { bool IsArmed { get; set; } void Detonate(); }
     public interface IMyProjector : IMyFunctionalBlock { bool IsProjecting { get; } int RemainingBlocks { get; } int TotalBlocks { get; } }
     public interface IMyShipWelder : IMyFunctionalBlock { }
     public interface IMyJumpDrive : IMyFunctionalBlock { }
-    public struct MyDetectedEntityInfo { public long EntityId; public VRage.Game.MyRelationsBetweenPlayerAndBlock Relationship; public bool IsEmpty() { return EntityId == 0; } }
+    public enum MyDetectedEntityType { None, Unknown, SmallGrid, LargeGrid, CharacterHuman, CharacterOther, FloatingObject, Asteroid, Planet, Meteor, Missile }
+    public struct MyDetectedEntityInfo
+    {
+        public long EntityId; public VRage.Game.MyRelationsBetweenPlayerAndBlock Relationship;
+        public MyDetectedEntityType Type; public Vector3D Position; public Vector3 Velocity; public BoundingBoxD BoundingBox; public Vector3D? HitPosition;
+        public bool IsEmpty() { return EntityId == 0; }
+    }
     public interface IMySensorBlock : IMyFunctionalBlock { void DetectedEntities(List<MyDetectedEntityInfo> entities); }
 
     public abstract class MyGridProgram
@@ -321,4 +353,11 @@ namespace SpaceEngineers.Game.ModAPI.Ingame
 namespace VRage.Game
 {
     public enum MyRelationsBetweenPlayerAndBlock { NoOwnership, Owner, FactionShare, Neutral, Enemies, Friends }
+}
+
+namespace Sandbox.ModAPI.Interfaces
+{
+    public interface ITerminalProperty { string Id { get; } }
+    public interface ITerminalProperty<TValue> : ITerminalProperty { TValue GetValue(VRage.Game.ModAPI.Ingame.IMyCubeBlock block); }
+    public static class TerminalPropertyExtensions { public static ITerminalProperty<T> As<T>(this ITerminalProperty p) { return null; } }
 }

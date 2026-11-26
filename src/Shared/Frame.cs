@@ -6,6 +6,7 @@
 class HubFrame
 {
     public Vector3D Pos, Vel, Fwd = Vector3D.Forward, Up = Vector3D.Up, AngVel, KoC;
+    public Vector3D BoxC, BoxH;   // hull box in the hub frame (centre, half extents); BoxH zero = none
     public double KoR, Phase, Rate;
     public int Mode, Alert;
     public double T = -1e9;     // local time the frame was received

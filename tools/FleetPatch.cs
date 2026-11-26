@@ -250,8 +250,19 @@ public static class FleetPatch
         where = FindGame();
         if (where == null) return null;
         var defs = new Dictionary<string, Def>();
-        foreach (var f in Directory.GetFiles(Path.Combine(where, Path.Combine("Content", "Data")), "*.sbc", SearchOption.AllDirectories))
+        // vanilla first, then installed workshop mods (e.g. the MA Designator); vanilla wins on clashes
+        var files = new List<string>(Directory.GetFiles(Path.Combine(where, Path.Combine("Content", "Data")), "*.sbc", SearchOption.AllDirectories));
+        int vanilla = files.Count;
+        string mods = Path.Combine(Path.Combine(Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(where.TrimEnd('\\', '/'))), "workshop"), "content"), "244850");
+        if (Directory.Exists(mods))
+            foreach (var m in Directory.GetDirectories(mods))
+            {
+                string data = Path.Combine(m, "Data");
+                if (Directory.Exists(data)) files.AddRange(Directory.GetFiles(data, "*.sbc", SearchOption.AllDirectories));
+            }
+        for (int fi = 0; fi < files.Count; fi++)
         {
+            string f = files[fi];
             string text;
             try { text = File.ReadAllText(f); } catch { continue; }
             if (text.IndexOf("<CubeBlocks", StringComparison.Ordinal) < 0) continue;
@@ -266,6 +277,7 @@ public static class FleetPatch
                 var size = d.SelectSingleNode("Size");
                 if (type == null || size == null) continue;
                 type = type.Replace("MyObjectBuilder_", "");
+                if (fi >= vanilla && defs.ContainsKey(type + "/" + sub)) continue;
                 defs[type + "/" + sub] = new Def { CubeSize = Text(d.SelectSingleNode("CubeSize")) ?? "", X = Int(Attr(size, "x")), Y = Int(Attr(size, "y")), Z = Int(Attr(size, "z")) };
             }
         }

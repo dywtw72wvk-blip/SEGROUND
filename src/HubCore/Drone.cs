@@ -22,6 +22,7 @@ class Drone
     public Vector3D A, B, C;
     public long Id;
     public bool SlotOk;          // escort slot computed & sent
+    public int Slot;             // formation slot index (nearest-slot assignment)
 
     // reliable delivery
     public long Seq;             // seq of outstanding directive (0 = nothing to deliver)

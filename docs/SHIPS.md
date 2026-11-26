@@ -41,10 +41,12 @@ Anything that fails the check isn't installed, and the installer lists the probl
 | | |
 |---|---|
 | Size | 5.5 × 7.5 × 7.0 m (W × H × L), 255 blocks |
-| Mass | 17.7 t (18.0 t with ammo) |
+| Mass | 16.7 t |
 | Lift | 1 large atmospheric thruster, sitting on the centre of mass. **Thrust-to-weight 3.0** at sea level in 1 g, so it keeps a healthy margin as the air thins. |
 | Horizontal | 6 small atmospheric thrusters: 9.8 m/s² forward and back, 4.9 m/s² sideways. No down thrusters; gravity does that, and the flight script accounts for it. |
-| Weapons | 2 Gatling turrets, top and belly, covering the whole sphere. They're always active (not tagged `[Combat]`), so a Buster defends itself and reports contacts to the hub, which raises the alert. |
+| Payload | 4 small warheads inside the hull. A Buster is a kamikaze drone: on ATTACK it goes terminal into the target. The script arms the warheads only inside `ArmDistance` (300 m) of the target and disarms them in every other state; proximity fuse plus impact. |
+| Intercept | AI Offensive (Intercept pattern, closest target, activated) + AI Flight (off). The script switches the AI Flight block on to hand over the controls for the last 600 m of an intercept. |
+| Sensors | 2 forward cameras beside the nose connector, used as lidar (camera raycasts): a sweep ahead and below while searching, and homing pings during the dive. Contacts go to the hub over the datalink. Antenna at 5 km (small-grid maximum). |
 | Power | 2 batteries |
 | Control | Remote control (forward = nose), 2 gyroscopes, programmable block `[Fleet Drone]` running the Drone script, antenna at 3 km |
 | Docking | Nose connector (small-grid regular connector), which mates with a large-grid connector |
@@ -66,7 +68,7 @@ Anything that fails the check isn't installed, and the installer lists the probl
 | Control | Cockpit at the bow, which also sets the hub's forward direction. 6 gyroscopes. Programmable blocks `[Fleet Core]` and `[Fleet UI]`. |
 | Screens | The cockpit's built-in screens show the fleet list (screen 0), tactical map (1) and hangar (2). If they land on the wrong screens, rename the cockpit's `[FS:...:n]` tags. |
 | Docks | **8 `[Dock]` connectors**, 4 per side on the deck edges, facing outward and 12.5 m apart. Busters dock nose-in from the flanks, so keep about 25 m of open air beside the carrier when recovering drones. |
-| Defense | 2 Gatling turrets on the deck. A turret target raises the hub to RED. Antenna at 5 km. |
+| Defense | 2 Gatling turrets on the deck. A turret target raises the hub to RED. Antenna at 20 km, so it reaches Busters anywhere in the search area. |
 
 **After pasting:**
 1. Load uranium into the 4 reactors.
@@ -76,7 +78,7 @@ Anything that fails the check isn't installed, and the installer lists the probl
 
 **Not included (add them if you want them):**
 - **Jump drive.** This is a planetary design.
-- **Conveyor network.** Reactors and drone ammo are topped up by hand. For automatic rearming, add conveyors and a `[Rearm]` sorter.
+- **Conveyor network.** Reactors and the deck turrets' ammo are topped up by hand. For automatic rearming, add conveyors and a `[Rearm]` sorter.
 - **Landing gear.**
 
 ## What isn't verified until you load it
@@ -91,3 +93,11 @@ Anything that fails the check isn't installed, and the installer lists the probl
   The generator keeps 3 m clear behind Buster thrusters and 10 m behind carrier thrusters.
 
 Report anything odd. Ship designs live in `tools/shipgen.py`; edit the layouts there and run `python3 tools/build.py`.
+
+## FS Spotter Atmo
+
+The Buster airframe without warheads, AI blocks or merge block, with a small Gatling turret on top (5 magazines loaded) and the two nose cameras. The turret is the spotter's sensor: in WeaponCore worlds it gives the spotter's grid a WeaponCore AI whose threat list the script reads; in vanilla worlds the script reads the turret's lock. Its PB runs the Drone script with `Role=Spotter` in Custom Data, so `search` sends it ahead and the defense manager leaves it alone. 16.9 t, lift TWR 3.13. Paste it separately; it can dock at any free `[Dock]` connector.
+
+## Carrier designation
+
+A forward camera named `Camera [Designator]` for the `designate` command (hotbar slot 6 views through it). In WeaponCore worlds, the target you lock with WeaponCore's HUD while flying the carrier is picked up as a designation, and WeaponCore's threat list for the carrier feeds strikes too.

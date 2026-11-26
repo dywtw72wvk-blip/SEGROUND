@@ -277,6 +277,46 @@ Hub UI button rows:
 
 Left and right move through both rows.
 
+**Defense menu:** put `[FS:Defense]` in an LCD's or cockpit's name (add `:3` etc. for a cockpit screen). It lists ALERT, DEFENSE, SAFE, AUTO-RTB, FORMATION, SCRAMBLE and RECALL. Run the Hub UI PB with `def up` / `def down` to pick a setting, `def left` / `def right` to change its value, and `def apply` to send it. Moving onto a setting starts at its current value.
+
+The generated carrier's Industrial Cockpit has this on screen 3 and comes with its toolbar filled in:
+
+| Slot | Page 1: Defense menu | Page 2: Fleet screen |
+|------|----------------------|----------------------|
+| 1 | `def up` | `up` |
+| 2 | `def down` | `down` |
+| 3 | `def left` | `left` |
+| 4 | `def right` | `right` |
+| 5 | `def apply` | `apply` |
+
+On cockpit screens, the Hub UI uses a compact layout with larger text. `CockpitZoom` (default 1) scales it, and `CockpitCompact=false` turns it off.
+
+**Strike (spotter, designation, death ring):**
+
+| Command | Effect |
+|---|---|
+| `search` / `search stop` | Spotters (drones with `Role=Spotter`) sweep forward `SearchDepth` (10 km) at `SearchAltitude` (800 m) above the hub, line abreast `SearchSpacing` apart if there are several. What their sensor turret tracks (WeaponCore threats, or the vanilla turret lock) comes back as contacts. |
+| `designate` | Raycast `DesignateRange` (10 km) from the hub camera tagged `[Designator]` (look through it first: hotbar slot 6). A grid hit becomes the target; terrain becomes a GPS target. The GPS is logged. |
+| `target GPS:name:x:y:z:` / `target x y z` / `target clear` | Designate a point / clear all contacts. |
+| `loiter` | Every Buster (docked ones launch one per `LaunchInterval`) to the death ring: `RingDistance` (2800 m) up a `RingCone` (20 deg) cone over the target, evenly spaced by azimuth, rotating at `RingRate` (2 deg/s). |
+| `attack [n]` | n Busters (default 1) leave the ring and dive. |
+| `attackall` | Every Buster on the ring dives, `AttackStagger` (1.5 s) apart, each aimed at its own side of the target. |
+| `abort` | Strike Busters back to escort. `recall` also aborts. |
+
+Contacts come from spotters, `designate`, `target`, the IGC designation channel `FS<NetId>/des`, and the hub's own sensors: in **WeaponCore** worlds the target you lock with WeaponCore's targeting HUD (treated as a designation) and WeaponCore's threat list for the carrier; in vanilla worlds any turret or turret controller on the hub with a lock. The Hub Core status shows `WeaponCore: linked` when the API is up. The largest contact is the target (designations always win); contacts nobody has seen for `ContactTimeout` (20 s) are dropped, designations are kept until `target clear`.
+
+Dive: from the ring at the target (plus an offset toward the Buster's side of it), full speed through a lead point with a lateral `Weave` that fades out before `ArmDistance` (300 m), where the warheads arm; proximity `Fuse` or impact.
+
+Intercept: while the Busters loiter, any small enemy grid seen moving within `InterceptRange` (4 km) of the target gets the nearest Buster on the ring, updated in real time from the designators and the Buster's camera. Inside `AiHandoff` (600 m) the Buster arms its warheads and hands control to its **AI Flight** and **AI Offensive** (Intercept pattern, closest target) blocks; if its drone disappears it returns to the ring.
+
+Mods: none required. Don't use the Laser Designator / MA Designator mods together with WeaponCore: WeaponCore takes over turrets, so their locks can't be read and the mods conflict.
+
+**Lidar budget:** every camera raycast into terrain is a costly physics query, so each Buster is capped at `LidarRate` (10) rays per second across its cameras (ground grid `LidarSwath` 1100 m wide, `LidarStep` 50 m apart, while searching over a planet). That keeps sim speed intact but makes Buster lidar opportunistic: a small target can slip between rays. Designations (hub turrets / turret controllers with long-range AI or designator mods, `target GPS:...`, or an AWACS drone on the designation channel) are the reliable way to find targets.
+
+**Formation and the hull:** drones only detour around the hub when their path crosses its hull box (plus `Clearance`), and always on their own side of it. When the carrier stops, the formation keeps its shape, drifts past and creeps back.
+
+**Launch spacing:** drones leave the docks one per `LaunchInterval` (0.5 s at RED override), whatever ordered the launch, and each escort slot goes to the nearest drone so their paths don't cross.
+
 **Tactical map:** put `[FS:Map]` in an LCD's name. It's a top-down radar in the hub's frame, with hub forward pointing up. It shows range rings, an elevation stem under each drone, state colours, a red ring around engaged drones and an alert-coloured border.
 
 ## 10. Phase 2 acceptance test

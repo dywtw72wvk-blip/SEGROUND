@@ -3,14 +3,18 @@
 // ============================================================================
 static class Proto
 {
-    public const int Version = 3;   // v3: status carries ammo (v2: NAV patrol phase/rate; ESCORT engage/leash/patrol)
+    public const int Version = 4;   // v4: NAV hull box, SEARCH/ATTACK orders, CONTACT reports (v3: status ammo)
 
     // Message types (header Item4)
-    public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4;
+    public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6;
 
     // Orders / hub directives
     public const int O_NONE = 0, O_REGISTER = 1, O_ESCORT = 2, O_HOLD = 3, O_GOTO = 4,
-                     O_DOCK = 5, O_UNDOCK = 6, O_STOP = 7;
+                     O_DOCK = 5, O_UNDOCK = 6, O_STOP = 7,
+                     O_SEARCH = 8,    // a = track start, b = forward * depth (world)
+                     O_ATTACK = 9,    // dive now: a = target pos, b = target vel, c = aim offset from target centre (world), id = target
+                     O_LOITER = 10,   // death ring: a = target pos, b = target vel (world), c = (slot, slots, ring distance), id = target
+                     O_INTERCEPT = 11; // chase a launched drone: a = its pos, b = its vel (world), id = its entity
 
     // Hub modes (MODE_AUTO is a setting only; the active mode is CARRIER or BASE)
     public const int MODE_AUTO = 0, MODE_CARRIER = 1, MODE_BASE = 2;
@@ -18,7 +22,8 @@ static class Proto
     // Drone states
     public const int S_BOOT = 0, S_UNPROV = 1, S_REGISTERING = 2, S_IDLE = 3, S_HOLD = 4,
                      S_ESCORT = 5, S_GOTO = 6, S_APPROACH = 7, S_FINAL = 8, S_DOCKED = 9,
-                     S_UNDOCKING = 10, S_LINKLOST = 11, S_ERROR = 12, S_PATROL = 13, S_ENGAGED = 14;
+                     S_UNDOCKING = 10, S_LINKLOST = 11, S_ERROR = 12, S_PATROL = 13, S_ENGAGED = 14,
+                     S_RECON = 15, S_ATTACK = 16, S_LOITER = 17, S_INTERCEPT = 18;
 
     // Drone status flags
     public const int F_DOCKED = 1, F_WANT_RTB = 2, F_LINKLOST = 4, F_NO_THRUST = 8, F_ARRIVED = 16,
@@ -38,8 +43,8 @@ static class Proto
     public static string FactoryName(int s) { return s >= 0 && s < facs.Length ? facs[s] : "?"; }
 
     static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
-                                        "APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED" };
-    static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP" };
+                                        "APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT" };
+    static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT" };
     static readonly string[] modes = { "AUTO", "CARRIER", "BASE" };
     static readonly string[] alerts = { "GREEN", "YELLOW", "RED" };
 

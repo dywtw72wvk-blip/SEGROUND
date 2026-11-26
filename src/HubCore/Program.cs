@@ -74,7 +74,23 @@ long ctr;
 
 // --- runtime
 double T, nextNav, nextTask, nextSnap, nextScan, nextProv, nextEcho, nextMode, lastModeT, anchoredFor;
-double nextManage, lastRed = -1e9, phase, rate;
+double nextManage, lastRed = -1e9, phase, rate, nextRelease;
+readonly List<Drone> esc = new List<Drone>();
+// strike: contacts from spotters, hub turrets/designators, the designator camera, GPS and the
+// designation channel; the largest is the target. Busters loiter on a death ring over it and dive.
+class Contact { public Vector3D P, V; public double Size, T; public int Type; public bool Fixed; }   // Fixed: designated, never expires
+readonly Dictionary<long, Contact> contacts = new Dictionary<long, Contact>();
+readonly List<long> dead = new List<long>();
+readonly List<Drone> launchQ = new List<Drone>(), attackQ = new List<Drone>();
+bool searching, loitering, sadNeutral;
+long tgtId; double icptRange, sadDepth, sadSpacing, sadAlt, sadForget, ringDist, stagger, desRange, nextAttack, noTgtSince = -1;
+string desTag = "[Designator]";
+readonly List<IMyTurretControlBlock> hubDesig = new List<IMyTurretControlBlock>();   // turret controllers
+readonly List<IMyCameraBlock> desCams = new List<IMyCameraBlock>();               // [Designator] cameras
+readonly Wc wc = new Wc();                                                         // WeaponCore: HUD lock + threats
+long wcLock;
+IMyBroadcastListener desL;
+string escSig = "";
 int alert = Proto.ALERT_GREEN;
 // phase 3 runtime
 readonly List<IMyFunctionalBlock> repairBlocks = new List<IMyFunctionalBlock>(), rearmBlocks = new List<IMyFunctionalBlock>();
@@ -163,6 +179,16 @@ void LoadConfig()
     if (!Formation.Valid(formC)) formC = "WEDGE";
     if (!Formation.Valid(formB)) formB = "RING";
     spacing = Math.Max(5, cfg.D("Spacing", 40));
+    sadDepth = cfg.D("SearchDepth", 10000);          // spotter sweep distance ahead of the hub (m)
+    sadSpacing = cfg.D("SearchSpacing", 1000);       // line-abreast spacing when there are several spotters
+    sadAlt = cfg.D("SearchAltitude", 800);           // spotter height above the hub
+    sadNeutral = cfg.B("TargetNeutral", false);      // also target neutral / unowned grids
+    sadForget = cfg.D("ContactTimeout", 20);         // a contact nobody has seen for this long is gone
+    ringDist = cfg.D("RingDistance", 2800);          // death ring: distance from the target, up the cone
+    icptRange = cfg.D("InterceptRange", 4000);      // small enemy grids moving this close to the target get a Buster
+    stagger = cfg.D("AttackStagger", 1.5);           // seconds between Busters on attackall
+    desRange = cfg.D("DesignateRange", 10000);       // designator camera raycast reach
+    desTag = cfg.S("DesignatorTag", "[Designator]");
     koCfg = cfg.D("KeepOutRadius", 0);
     dockTag = cfg.S("DockTag", "[Dock]");
     ctlTag = cfg.S("ControllerTag", "");
@@ -208,6 +234,8 @@ void LoadConfig()
     if (cmdL != null) IGC.DisableBroadcastListener(cmdL);
     helloL = IGC.RegisterBroadcastListener(net.THello);
     cmdL = IGC.RegisterBroadcastListener(net.TCmd);
+    if (desL != null) IGC.DisableBroadcastListener(desL);
+    desL = IGC.RegisterBroadcastListener(net.TDes);
     if (facL != null) IGC.DisableBroadcastListener(facL);
     facL = IGC.RegisterBroadcastListener(net.TFacSt);
 }
@@ -216,7 +244,8 @@ void Scan()
 {
     tmp.Clear();
     GridTerminalSystem.GetBlocksOfType(tmp, b => b.IsSameConstructAs(Me));
-    dockConns.Clear(); allConns.Clear(); gears.Clear(); hubTurrets.Clear(); alertSensors.Clear();
+    dockConns.Clear(); allConns.Clear(); gears.Clear(); hubTurrets.Clear(); alertSensors.Clear(); hubDesig.Clear(); desCams.Clear();
+    if (!wc.Ok) wc.Init(Me);
     repairBlocks.Clear(); rearmBlocks.Clear(); jumpDrives.Clear(); hubBats.Clear();
     refCtl = null;
     IMyShipController any = null, main = null;
@@ -235,6 +264,8 @@ void Scan()
         }
         var g = b as IMyLandingGear; if (g != null) { gears.Add(g); continue; }
         var tu = b as IMyLargeTurretBase; if (tu != null) { hubTurrets.Add(tu); continue; }
+        var tc = b as IMyTurretControlBlock; if (tc != null) { hubDesig.Add(tc); continue; }
+        var dc = b as IMyCameraBlock; if (dc != null && b.CustomName.Contains(desTag)) { desCams.Add(dc); if (!dc.EnableRaycast) dc.EnableRaycast = true; continue; }
         var se = b as IMySensorBlock; if (se != null) { if (b.CustomName.Contains(alertTag)) alertSensors.Add(se); continue; }
         var jd = b as IMyJumpDrive; if (jd != null) { jumpDrives.Add(jd); continue; }
         var bt = b as IMyBatteryBlock; if (bt != null) { hubBats.Add(bt); continue; }
@@ -357,7 +388,19 @@ void SetFreq()
 
 void SendNav()
 {
-    net.SendNav(M.Translation, vel, M.Forward, M.Up, angVel, Me.CubeGrid.WorldVolume.Center, KeepOutRadius(), mode, alert, phase, rate);
+    // hull box in the hub frame: the grid's cell bounds, corners mapped into the reference frame
+    var g = Me.CubeGrid;
+    double gs = g.GridSize;
+    Vector3D half = new Vector3D(gs / 2), lo = new Vector3D(g.Min) * gs - half, hi = new Vector3D(g.Max) * gs + half;
+    Vector3D bmin = new Vector3D(double.MaxValue), bmax = new Vector3D(double.MinValue);
+    for (int i = 0; i < 8; i++)
+    {
+        var c = new Vector3D((i & 1) != 0 ? hi.X : lo.X, (i & 2) != 0 ? hi.Y : lo.Y, (i & 4) != 0 ? hi.Z : lo.Z);
+        var l = HubFrame.ToLocal(M, Vector3D.Transform(c, g.WorldMatrix));
+        bmin = Vector3D.Min(bmin, l); bmax = Vector3D.Max(bmax, l);
+    }
+    net.SendNav(M.Translation, vel, M.Forward, M.Up, angVel, g.WorldVolume.Center, KeepOutRadius(), mode, alert, phase, rate,
+                (bmin + bmax) / 2, (bmax - bmin) / 2);
 }
 
 // ---------------------------------------------------------------- messages
@@ -376,6 +419,8 @@ void Receive()
     while (uni.HasPendingMessage)
     {
         var m = uni.AcceptMessage();
+        long cid; int ctype; double csz; Vector3D cp, cv;
+        if (net.ReadContact(m, out cid, out ctype, out csz, out cp, out cv)) { if (reg.ContainsKey(m.Source)) OnContact(cid, ctype, csz, cp, cv); continue; }
         MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>> s;
         if (!net.ReadStatus(m, out s)) continue;
 
@@ -402,6 +447,11 @@ void Receive()
         if (d.Acked) { d.Tries = 0; d.Unresp = false; }
     }
 
+    while (desL.HasPendingMessage)
+    {
+        long id; double size; Vector3D dp, dv;
+        if (net.ReadDesignation(desL.AcceptMessage(), out id, out size, out dp, out dv) ) OnContact(id, 0, size, dp, dv);
+    }
     while (cmdL.HasPendingMessage)
     {
         var s = cmdL.AcceptMessage().Data as string;
@@ -522,6 +572,7 @@ void Tasking()
     }
 
     UpdateAlert();
+    StrikeTick();
     Logistics();
     Manage();
 
@@ -529,13 +580,38 @@ void Tasking()
     string form = mode == Proto.MODE_BASE ? formB : formC;
     double R = KeepOutRadius();
     Vector3D lc = HubFrame.ToLocal(M, Me.CubeGrid.WorldVolume.Center);
-    int n = 0;
-    foreach (var d in sorted) if (d.Dir == Proto.O_ESCORT && !d.LostFlag) n++;
-    int i = 0;
-    foreach (var d in sorted)
+    esc.Clear();
+    foreach (var d in sorted) if (d.Dir == Proto.O_ESCORT && !d.LostFlag) esc.Add(d);
+    int n = esc.Count;
+    // Slot assignment: nearest drone to each slot (fewer crossing paths), recomputed only when
+    // the set of escorting drones or the formation changes, so drones don't swap slots mid-flight.
+    string sig = form + n + R.ToString("0") + spacing; foreach (var d in esc) sig += "," + d.Addr;
+    if (sig != escSig)
     {
-        if (d.Dir != Proto.O_ESCORT || d.LostFlag) continue;
-        Vector3D pat = Formation.Offset(form, i++, n, spacing, R);
+        escSig = sig;
+        foreach (var d in esc) d.Slot = -1;
+        for (int j = 0; j < n; j++)
+        {
+            Vector3D sp = lc + Formation.Offset(form, j, n, spacing, R);
+            Drone best = null; double bd = double.MaxValue;
+            foreach (var d in esc)
+            {
+                if (d.Slot >= 0) continue;
+                double dd = (HubFrame.ToLocal(M, d.Pos) - sp).LengthSquared();
+                if (dd < bd) { bd = dd; best = d; }
+            }
+            best.Slot = j;
+        }
+    }
+    foreach (var d in esc)
+    {
+        // stagger departures from the docks: one launch per LaunchInterval, whatever ordered it
+        if (d.Docked && !d.SlotOk)
+        {
+            if (T < nextRelease) continue;
+            nextRelease = T + (alertOverride == Proto.ALERT_RED ? 0.5 : launchInterval);
+        }
+        Vector3D pat = Formation.Offset(form, d.Slot, n, spacing, R);
         Vector3D off = lc + pat;
         Vector3D face = mode == Proto.MODE_BASE ? Formation.Outward(pat) : new Vector3D(0, 0, -1);
         bool engage = !safe && IsDefense(d.Role) && alert >= engageAlert;
@@ -546,6 +622,245 @@ void Tasking()
             d.SlotOk = true;
         }
     }
+}
+
+// ---------------------------------------------------------------- strike
+// search      spotters sweep forward (line abreast) with their designators; contacts come back
+// designate   raycast from a [Designator] camera: hit -> target (GPS logged)
+// target GPS  designate a point;  target clear
+// loiter      every Buster to the death ring: RingDistance up a cone over the target, rotating
+// attack [n]  n Busters (default 1) leave the ring and dive
+// attackall   all of them, AttackStagger apart, each on its own side of the target
+// abort       Busters back to escort
+bool OnStrike(Drone d) { return d.Dir == Proto.O_SEARCH || d.Dir == Proto.O_ATTACK || d.Dir == Proto.O_LOITER || d.Dir == Proto.O_INTERCEPT; }
+bool IsSpotter(Drone d) { return (d.Role ?? "").ToUpper() == "SPOTTER"; }
+
+Vector3D UpVec()
+{
+    Vector3D g = refCtl != null ? refCtl.GetNaturalGravity() : Vector3D.Zero;
+    return g.LengthSquared() > 0.01 ? -Util.Norm(g) : M.Up;
+}
+
+void StartSearch()
+{
+    var team = new List<Drone>();
+    foreach (var d in sorted) if (!d.LostFlag && IsSpotter(d)) team.Add(d);
+    if (team.Count == 0) { Log("Search: no spotter registered"); return; }
+    Vector3D up = UpVec(), fwd = Util.Norm(M.Forward - up * Vector3D.Dot(M.Forward, up));
+    if (fwd.LengthSquared() < 0.5) fwd = M.Forward;
+    Vector3D right = Vector3D.Cross(fwd, up);
+    team.Sort((a, b) => Vector3D.Dot(a.Pos - M.Translation, right).CompareTo(Vector3D.Dot(b.Pos - M.Translation, right)));
+    Vector3D o = M.Translation + up * sadAlt + fwd * KeepOutRadius();
+    for (int i = 0; i < team.Count; i++)
+        Issue(team[i], Proto.O_SEARCH, o + right * (sadSpacing * (i - (team.Count - 1) / 2.0)), fwd * sadDepth, Vector3D.Zero, 0);
+    searching = true;
+    Log("Search: " + team.Count + " spotter(s), " + Util.Dist(sadDepth) + " ahead");
+}
+
+void StopSearch()
+{
+    searching = false;
+    foreach (var d in reg.Values) if (d.Dir == Proto.O_SEARCH) OrderEscort(d);
+}
+
+void OnContact(long id, int type, double size, Vector3D p, Vector3D v)
+{
+    Contact c;
+    if (!contacts.TryGetValue(id, out c))
+    {
+        contacts[id] = c = new Contact();
+        Log("Contact " + Util.Dist(size) + " at " + Util.Dist((p - M.Translation).Length()) + "  " + Gps("FS Contact", p));
+    }
+    c.P = p; c.V = v; c.Size = size; c.Type = type; c.T = T;
+}
+
+static string Gps(string name, Vector3D p) { return "GPS:" + name + ":" + p.X.ToString("0") + ":" + p.Y.ToString("0") + ":" + p.Z.ToString("0") + ":"; }
+
+// the hub's own trackers: turrets (incl. MA Designator) and turret controllers with a lock
+void HubSensors()
+{
+    if (wc.Ok)
+    {
+        foreach (var kv in wc.Threats(Me)) HubSeen(kv.Key);
+        // the target locked with WeaponCore's HUD is a designation: it outranks everything seen
+        var f = wc.Focus(Me.CubeGrid.EntityId);
+        if (!f.IsEmpty())
+        {
+            OnContact(f.EntityId, (int)f.Type, Math.Max(1e5, f.BoundingBox.Size.Length()), f.Position, f.Velocity);
+            if (f.EntityId != wcLock) Log("WC LOCK " + Util.Dist((f.Position - M.Translation).Length()) + "  " + Gps("FS Target", f.Position));
+        }
+        wcLock = f.IsEmpty() ? 0 : f.EntityId;
+    }
+    foreach (var t in hubTurrets) if (!t.Closed && t.IsWorking && t.HasTarget) HubSeen(t.GetTargetedEntity());
+    foreach (var t in hubDesig) if (!t.Closed && t.IsWorking && t.HasTarget) HubSeen(t.GetTargetedEntity());
+}
+
+bool Hostile(MyDetectedEntityInfo e)
+{
+    if (e.IsEmpty() || (e.Type != MyDetectedEntityType.SmallGrid && e.Type != MyDetectedEntityType.LargeGrid)) return false;
+    var r = e.Relationship;
+    return r == MyRelationsBetweenPlayerAndBlock.Enemies || (sadNeutral && (r == MyRelationsBetweenPlayerAndBlock.Neutral || r == MyRelationsBetweenPlayerAndBlock.NoOwnership));
+}
+
+void HubSeen(MyDetectedEntityInfo e) { if (Hostile(e)) OnContact(e.EntityId, (int)e.Type, e.BoundingBox.Size.Length(), e.Position, e.Velocity); }
+
+void Designate()
+{
+    IMyCameraBlock cam = null;
+    foreach (var c in desCams) if (!c.Closed && c.IsWorking) { cam = c; break; }
+    if (cam == null) { Log("Designate: no camera tagged " + desTag); return; }
+    if (!cam.CanScan(desRange)) { Log("Designate: charging (" + Util.Dist(cam.AvailableScanRange) + " of " + Util.Dist(desRange) + ")"); return; }
+    var e = cam.Raycast(desRange);
+    if (e.IsEmpty() || e.HitPosition == null) { Log("Designate: nothing within " + Util.Dist(desRange)); return; }
+    Vector3D hp = e.HitPosition.Value;
+    long id = -1;
+    if (e.Type == MyDetectedEntityType.SmallGrid || e.Type == MyDetectedEntityType.LargeGrid) { id = e.EntityId; OnContact(id, (int)e.Type, Math.Max(1e5, e.BoundingBox.Size.Length()), e.Position, e.Velocity); }
+    else OnContact(-1, 0, 1e6, hp, Vector3D.Zero);
+    contacts[id].Fixed = true;
+    Log("DESIGNATED " + Util.Dist((hp - M.Translation).Length()) + "  " + Gps("FS Target", id == -1 ? hp : e.Position));
+}
+
+// 2 Hz: sensors, expiry, target choice, ring and dive bookkeeping
+void StrikeTick()
+{
+    HubSensors();
+    dead.Clear();
+    foreach (var kv in contacts) if (!kv.Value.Fixed && T - kv.Value.T > sadForget) dead.Add(kv.Key);
+    foreach (var id in dead) { contacts.Remove(id); if (id == tgtId) Log("Target lost or destroyed"); }
+
+    long best = 0; Contact bc = null;
+    foreach (var kv in contacts) if (bc == null || kv.Value.Size > bc.Size) { best = kv.Key; bc = kv.Value; }
+    if (bc != null && best != tgtId) { tgtId = best; Log("TARGET " + Util.Dist(bc.Size) + " at " + Util.Dist((bc.P - M.Translation).Length()) + (loitering ? "" : ": run loiter")); if (loitering) Loiter(); }
+    if (bc == null) tgtId = 0;
+
+    if (searching)
+    {
+        bool done = true;
+        foreach (var d in reg.Values) if (d.Dir == Proto.O_SEARCH && !d.LostFlag && (d.Flags & Proto.F_ARRIVED) == 0) done = false;
+        if (done) { Log("Search: sweep complete"); StopSearch(); }
+    }
+    if (!loitering) return;
+    if (bc == null)
+    {
+        if (noTgtSince < 0) noTgtSince = T;
+        if (T - noTgtSince > sadForget) { Log("No target: Busters returning"); Abort(); }
+        return;
+    }
+    noTgtSince = -1;
+    // staggered departures for docked Busters joining the ring, staggered dives on attackall
+    if (launchQ.Count > 0 && T >= nextRelease) { var d = launchQ[0]; launchQ.RemoveAt(0); SendLoiter(d); nextRelease = T + launchInterval; }
+    if (attackQ.Count > 0 && T >= nextAttack) { var d = attackQ[0]; attackQ.RemoveAt(0); Dive(d, bc); nextAttack = T + stagger; }
+    // keep every fix fresh; interceptors whose drone is gone go back to the ring
+    foreach (var d in reg.Values)
+    {
+        if (d.LostFlag) continue;
+        Contact k;
+        if ((d.Dir == Proto.O_LOITER || d.Dir == Proto.O_ATTACK) && d.Id == tgtId && (d.A - bc.P).LengthSquared() > 50 * 50) Issue(d, d.Dir, bc.P, bc.V, d.C, tgtId);
+        else if (d.Dir == Proto.O_INTERCEPT)
+        {
+            if (!contacts.TryGetValue(d.Id, out k)) Ring(d);
+            else if ((d.A - k.P).LengthSquared() > 30 * 30) Issue(d, Proto.O_INTERCEPT, k.P, k.V, Vector3D.Zero, d.Id);
+        }
+    }
+    Intercepts(bc);
+    bool any = launchQ.Count > 0;
+    foreach (var d in reg.Values) if (!d.LostFlag && (d.Dir == Proto.O_LOITER || d.Dir == Proto.O_ATTACK || d.Dir == Proto.O_INTERCEPT)) any = true;
+    if (!any) { Log("Strike: no Busters left"); Abort(); }
+}
+
+// every Buster (airborne now, docked ones one per LaunchInterval) to a ring slot, ordered by azimuth
+// around the target so nobody crosses the circle to reach its slot
+List<Drone> ring = new List<Drone>();
+void Loiter()
+{
+    Contact c;
+    if (tgtId == 0 || !contacts.TryGetValue(tgtId, out c)) { Log("Loiter: no target (search or designate first)"); return; }
+    ring.Clear(); launchQ.Clear();
+    foreach (var d in sorted) if (!d.LostFlag && IsDefense(d.Role) && d.Dir != Proto.O_ATTACK && (d.Dir != Proto.O_DOCK || d.Docked)) ring.Add(d);
+    if (ring.Count == 0) { Log("Loiter: no Busters"); return; }
+    Vector3D u = UpVec(), e1 = Util.Norm(Util.Perp(u)), e2 = Vector3D.Cross(u, e1);
+    ring.Sort((a, b) => Az(a.Pos - c.P, e1, e2).CompareTo(Az(b.Pos - c.P, e1, e2)));
+    for (int i = 0; i < ring.Count; i++)
+    {
+        var d = ring[i];
+        d.Managed = true;
+        d.C = new Vector3D(i, ring.Count, ringDist);
+        if (d.Docked && d.Dir != Proto.O_LOITER) launchQ.Add(d); else SendLoiter(d);
+    }
+    loitering = true; noTgtSince = -1;
+    Log("LOITER: " + ring.Count + " Buster(s) on a " + Util.Dist(ringDist) + " ring over the target");
+}
+
+static double Az(Vector3D v, Vector3D e1, Vector3D e2) { return Math.Atan2(Vector3D.Dot(v, e2), Vector3D.Dot(v, e1)); }
+
+// launched drones: a small enemy grid moving near the target gets the nearest Buster on the ring
+void Intercepts(Contact bc)
+{
+    foreach (var kv in contacts)
+    {
+        var k = kv.Value;
+        if (kv.Key == tgtId || k.Type != (int)MyDetectedEntityType.SmallGrid || k.V.LengthSquared() < 9 || (k.P - bc.P).Length() > icptRange) continue;
+        bool taken = false;
+        foreach (var d in reg.Values) if (d.Dir == Proto.O_INTERCEPT && d.Id == kv.Key && !d.LostFlag) taken = true;
+        if (taken) continue;
+        Drone pick = null; double pd = double.MaxValue;
+        foreach (var d in reg.Values)
+            if (!d.LostFlag && d.Dir == Proto.O_LOITER && d.State == Proto.S_LOITER && !attackQ.Contains(d) && (d.Pos - k.P).LengthSquared() < pd) { pd = (d.Pos - k.P).LengthSquared(); pick = d; }
+        if (pick == null) return;
+        Issue(pick, Proto.O_INTERCEPT, k.P, k.V, Vector3D.Zero, kv.Key);
+        Log("INTERCEPT: " + pick.Call + " -> launched drone " + Util.Dist(Math.Sqrt(pd)) + " away");
+    }
+}
+
+// back to the ring slot it had
+void Ring(Drone d) { if (ring.Contains(d)) { d.C = new Vector3D(ring.IndexOf(d), ring.Count, ringDist); SendLoiter(d); } else OrderEscort(d); }
+
+void SendLoiter(Drone d)
+{
+    Contact c;
+    if (contacts.TryGetValue(tgtId, out c)) Issue(d, Proto.O_LOITER, c.P, c.V, d.C, tgtId);
+}
+
+// dive: aim at the side of the target facing this Buster's ring slot (spread over the hull)
+void Dive(Drone d, Contact c)
+{
+    Vector3D h = d.Pos - c.P, u = UpVec();
+    h -= u * Vector3D.Dot(h, u);
+    double r = Math.Min(c.Size, 1e4) * 0.3;
+    Issue(d, Proto.O_ATTACK, c.P, c.V, Util.Norm(h) * (c.Size >= 1e5 ? 0 : r), tgtId);
+}
+
+void Attack(int n, bool all)
+{
+    Contact c;
+    if (tgtId == 0 || !contacts.TryGetValue(tgtId, out c)) { Log("Attack: no target"); return; }
+    var on = new List<Drone>();
+    foreach (var d in sorted) if (!d.LostFlag && d.Dir == Proto.O_LOITER && d.State == Proto.S_LOITER && !attackQ.Contains(d)) on.Add(d);
+    if (on.Count == 0) { Log("Attack: no Busters on the ring yet"); return; }
+    if (all) { attackQ.AddRange(on); nextAttack = T; Log("ATTACK ALL: " + on.Count + " Buster(s), " + stagger + " s apart"); return; }
+    for (int i = 0; i < Math.Min(n, on.Count); i++) Dive(on[i], c);
+    Log("ATTACK: " + Math.Min(n, on.Count) + " Buster(s) diving, " + (on.Count - Math.Min(n, on.Count)) + " left on the ring");
+}
+
+void Abort()
+{
+    loitering = false; launchQ.Clear(); attackQ.Clear(); noTgtSince = -1;
+    foreach (var d in reg.Values) if (d.Dir == Proto.O_LOITER || d.Dir == Proto.O_ATTACK || d.Dir == Proto.O_INTERCEPT) OrderEscort(d);
+}
+
+// "GPS:name:x:y:z:..." or "x y z"
+static bool ParseGps(string a, out Vector3D p)
+{
+    p = Vector3D.Zero;
+    bool g = a.StartsWith("GPS:", StringComparison.OrdinalIgnoreCase);
+    string[] f = g ? a.Split(':') : a.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+    int i = g ? 2 : 0;
+    double x, y, z;
+    var ci = System.Globalization.CultureInfo.InvariantCulture;
+    var ns = System.Globalization.NumberStyles.Float;
+    if (f.Length < i + 3 || !double.TryParse(f[i], ns, ci, out x) || !double.TryParse(f[i + 1], ns, ci, out y) || !double.TryParse(f[i + 2], ns, ci, out z)) return false;
+    p = new Vector3D(x, y, z);
+    return true;
 }
 
 // ---------------------------------------------------------------- defense
@@ -559,7 +874,7 @@ void UpdateAlert()
 {
     bool red = false, yellow = false;
     foreach (var t in hubTurrets) if (!t.Closed && t.IsWorking && t.HasTarget) { red = true; break; }
-    if (!red) foreach (var d in reg.Values) if (!d.LostFlag && (d.Flags & Proto.F_CONTACT) != 0) { red = true; break; }
+    if (!red) foreach (var d in reg.Values) if (!d.LostFlag && (d.Flags & Proto.F_CONTACT) != 0 && !OnStrike(d)) { red = true; break; }
     foreach (var s in alertSensors)
     {
         if (yellow || s.Closed || !s.IsWorking) continue;
@@ -591,7 +906,7 @@ void Manage()
         total++;
         if (d.Dir == Proto.O_ESCORT) mOut.Add(d);
         else if (d.Docked) { if (LaunchReady(d)) mReady.Add(d); }
-        else if (d.Dir != Proto.O_DOCK) mIdle.Add(d);
+        else if (d.Dir != Proto.O_DOCK && !OnStrike(d)) mIdle.Add(d);
     }
     int target = alert == Proto.ALERT_RED ? screenR : alert == Proto.ALERT_YELLOW ? screenY : screenG;
     if (target < 0 || target > total) target = total;
@@ -785,7 +1100,27 @@ void Command(string raw)
         case "stop":
             ForTargets(tgt, Manual(d => Issue(d, Proto.O_STOP, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0)));
             break;
+        case "target":
+            if (t.Length > 1 && t[1].ToLower() == "clear") { contacts.Clear(); tgtId = 0; Log("Targets cleared"); break; }
+            {
+                Vector3D gp;
+                if (!ParseGps(raw.Substring(raw.IndexOf(' ') + 1).Trim(), out gp)) { Log("target GPS:name:x:y:z: | target x y z | target clear"); break; }
+                OnContact(-1, 0, 1e6, gp, Vector3D.Zero);   // a designation outranks anything seen
+                contacts[-1].Fixed = true;
+                Log("DESIGNATED " + Gps("FS Target", gp));
+            }
+            break;
+        case "designate": Designate(); break;
+        case "search":
+            if (t.Length > 1 && (t[1].ToLower() == "stop" || t[1].ToLower() == "off")) { Log("Search: stopped"); StopSearch(); }
+            else StartSearch();
+            break;
+        case "loiter": Loiter(); break;
+        case "attack": { int n; Attack(t.Length > 1 && int.TryParse(t[1], out n) ? Math.Max(1, n) : 1, false); } break;
+        case "attackall": Attack(0, true); break;
+        case "abort": Log("Strike aborted: Busters returning"); Abort(); break;
         case "recall":
+            Abort(); StopSearch();
             defense = false; cfg.Set("Defense", "false"); alertOverride = -1;
             Log("RECALL: defense paused, all drones docking");
             if (docks.List.Count > 0) ForTargets("all", OrderDock);
@@ -967,7 +1302,7 @@ void SendSnapshot()
       .Append('|').Append(hasWp ? 1 : 0).Append('|').Append((int)(perf.Avg * 1000)).Append('|').Append(online)
       .Append('|').Append(Util.Clean(Me.CubeGrid.CustomName))
       .Append('|').Append(alert).Append('|').Append(alertOverride >= 0 ? 1 : 0).Append('|').Append(safe ? 1 : 0).Append('|').Append(defense ? 1 : 0)
-      .Append('|').Append(jumpState)
+      .Append('|').Append(jumpState).Append('|').Append((searching ? 1 : 0) | (tgtId != 0 ? 2 : 0) | (loitering ? 4 : 0))
       .Append('\n');
     foreach (var d in sorted)
     {
@@ -1019,7 +1354,7 @@ void BuildEcho()
     if (targetStock > 0) e.Append("Stock ").Append(liveStock).Append('/').Append(targetStock).Append("   Factory: ").Append(T - facT < 10 ? Proto.FactoryName(facSt) : "no link").Append('\n');
     e.Append("Alert: ").Append(Proto.AlertName(alert)).Append(alertOverride >= 0 ? " (forced)" : " (auto)")
      .Append("   Defense: ").Append(defense ? "on" : "off").Append(safe ? "   SAFE" : "")
-     .Append("   Turrets: ").Append(hubTurrets.Count).Append("  Alert sensors: ").Append(alertSensors.Count).Append('\n');
+     .Append("   Turrets: ").Append(hubTurrets.Count).Append("  Alert sensors: ").Append(alertSensors.Count).Append("  WeaponCore: ").Append(wc.Ok ? "linked" : "no").Append('\n');
     e.Append(perf.Text()).Append('\n');
     e.Append(warn);
     for (int i = evText.Count - 1; i >= Math.Max(0, evText.Count - 5); i--) e.Append(Util.Age((int)(T - evT[i]))).Append("  ").Append(evText[i]).Append('\n');

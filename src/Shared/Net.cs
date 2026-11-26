@@ -10,7 +10,7 @@ class Net
 {
     public readonly IMyIntergridCommunicationSystem IGC;
     public int NetId, KeyHash;
-    public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "";
+    public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "";
 
     public Net(IMyIntergridCommunicationSystem igc) { IGC = igc; }
 
@@ -20,7 +20,7 @@ class Net
         KeyHash = Util.Hash(key ?? "");
         string p = "FS" + netId + "/";
         TNav = p + "nav"; THello = p + "hello"; TSts = p + "sts"; TOrd = p + "ord";
-        TCmd = p + "cmd"; TSnap = p + "snap"; TFac = p + "fac"; TFacSt = p + "facst";
+        TCmd = p + "cmd"; TSnap = p + "snap"; TFac = p + "fac"; TFacSt = p + "facst"; TCon = p + "con"; TDes = p + "des";
     }
 
     MyTuple<int, int, int, int, long> Hdr(int type, long seq)
@@ -35,24 +35,27 @@ class Net
 
     // ---------------- NAV (hub -> all, broadcast) ----------------
     // phase/rate: shared patrol rotation (radians, rad/s) so all drones orbit in step
+    // boxC/boxH: hull bounding box in the hub frame (centre, half extents) for close avoidance
     public void SendNav(Vector3D pos, Vector3D vel, Vector3D fwd, Vector3D up, Vector3D ang,
-                        Vector3D koc, double kor, int mode, int alert, double phase, double rate)
+                        Vector3D koc, double kor, int mode, int alert, double phase, double rate, Vector3D boxC, Vector3D boxH)
     {
         IGC.SendBroadcastMessage(TNav,
-            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>>(
+            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>, MyTuple<Vector3D, Vector3D>>(
                 Hdr(Proto.M_NAV, 0),
                 new MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>(pos, vel, fwd, up, ang),
-                new MyTuple<Vector3D, double, int, int, double, double>(koc, kor, mode, alert, phase, rate)));
+                new MyTuple<Vector3D, double, int, int, double, double>(koc, kor, mode, alert, phase, rate),
+                new MyTuple<Vector3D, Vector3D>(boxC, boxH)));
     }
 
     public bool ReadNav(MyIGCMessage m, HubFrame f)
     {
-        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>>)) return false;
-        var n = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>>)m.Data;
+        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>, MyTuple<Vector3D, Vector3D>>)) return false;
+        var n = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, Vector3D, Vector3D, Vector3D, Vector3D>, MyTuple<Vector3D, double, int, int, double, double>, MyTuple<Vector3D, Vector3D>>)m.Data;
         if (!Ok(n.Item1, Proto.M_NAV)) return false;
         f.Pos = n.Item2.Item1; f.Vel = n.Item2.Item2; f.Fwd = n.Item2.Item3; f.Up = n.Item2.Item4; f.AngVel = n.Item2.Item5;
         f.KoC = n.Item3.Item1; f.KoR = n.Item3.Item2; f.Mode = n.Item3.Item3; f.Alert = n.Item3.Item4;
         f.Phase = n.Item3.Item5; f.Rate = n.Item3.Item6;
+        f.BoxC = n.Item4.Item1; f.BoxH = n.Item4.Item2;
         f.Valid = true;
         return true;
     }
@@ -117,6 +120,45 @@ class Net
         if (!Ok(o.Item1, Proto.M_ORD)) return false;
         seq = o.Item1.Item5; code = o.Item2.Item1; a = o.Item2.Item2; b = o.Item2.Item3; c = o.Item2.Item4;
         id = o.Item2.Item5; text = o.Item2.Item6;
+        return true;
+    }
+
+    // ---------------- CONTACT (drone -> its hub, unicast) ----------------
+    // what a drone's turrets are locked on: (entity id, type, size m) (pos, vel)
+    public bool SendContact(long hub, long id, int type, double size, Vector3D pos, Vector3D vel)
+    {
+        return IGC.SendUnicastMessage(hub, TCon,
+            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, int, double>, MyTuple<Vector3D, Vector3D>>(
+                Hdr(Proto.M_CON, 0), new MyTuple<long, int, double>(id, type, size), new MyTuple<Vector3D, Vector3D>(pos, vel)));
+    }
+
+    public bool ReadContact(MyIGCMessage m, out long id, out int type, out double size, out Vector3D pos, out Vector3D vel)
+    {
+        id = 0; type = 0; size = 0; pos = vel = Vector3D.Zero;
+        if (m.Tag != TCon || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, int, double>, MyTuple<Vector3D, Vector3D>>)) return false;
+        var c = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, int, double>, MyTuple<Vector3D, Vector3D>>)m.Data;
+        if (!Ok(c.Item1, Proto.M_CON)) return false;
+        id = c.Item2.Item1; type = c.Item2.Item2; size = c.Item2.Item3; pos = c.Item3.Item1; vel = c.Item3.Item2;
+        return true;
+    }
+
+    // ---------------- DESIGNATION (anyone on the net -> hubs, broadcast) ----------------
+    // a target for search & destroy from a designator / AWACS script: (entity id or 0, size m) (pos, vel)
+    public void SendDesignation(long id, double size, Vector3D pos, Vector3D vel)
+    {
+        IGC.SendBroadcastMessage(TDes,
+            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, double>, MyTuple<Vector3D, Vector3D>>(
+                Hdr(Proto.M_DES, 0), new MyTuple<long, double>(id, size), new MyTuple<Vector3D, Vector3D>(pos, vel)));
+    }
+
+    public bool ReadDesignation(MyIGCMessage m, out long id, out double size, out Vector3D pos, out Vector3D vel)
+    {
+        id = 0; size = 0; pos = vel = Vector3D.Zero;
+        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, double>, MyTuple<Vector3D, Vector3D>>)) return false;
+        var d = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, double>, MyTuple<Vector3D, Vector3D>>)m.Data;
+        if (!Ok(d.Item1, Proto.M_DES)) return false;
+        id = d.Item2.Item1; size = d.Item2.Item2; pos = d.Item3.Item1; vel = d.Item3.Item2;
+        if (id == 0) id = -2;   // anonymous designation: one shared slot
         return true;
     }
 }

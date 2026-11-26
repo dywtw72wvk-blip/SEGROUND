@@ -2,6 +2,8 @@
 // FLEET SYSTEM — DRONE (phase 2: Buster defense role)
 // Runs on every drone. Registers with a hub, follows orders (escort/screen,
 // patrol, hold, goto, dock, undock, stop), docks itself, reports telemetry.
+// Search & destroy: sweeps a strip with camera lidar, reports contacts, and on ATTACK
+// goes terminal into the target with armed warheads.
 // Buster role: when the hub says ENGAGE, turns on the drone's [Combat] blocks
 // (turrets, weapons, AI combat blocks) and fires [Engage] timers. In
 // EngageMode=AI it hands flight to the vanilla AI blocks inside a leash around
@@ -28,16 +30,26 @@ readonly List<IMyShipConnector> conns = new List<IMyShipConnector>();
 readonly List<IMyFunctionalBlock> combat = new List<IMyFunctionalBlock>();
 readonly List<IMyTimerBlock> tEng = new List<IMyTimerBlock>(), tDis = new List<IMyTimerBlock>();
 readonly List<IMyLargeTurretBase> turrets = new List<IMyLargeTurretBase>();
+readonly List<IMyCameraBlock> cams = new List<IMyCameraBlock>();      // lidar: search and homing
+readonly List<IMyWarhead> heads = new List<IMyWarhead>();             // terminal attack payload
+readonly List<IMyOffensiveCombatBlock> aiOff = new List<IMyOffensiveCombatBlock>();   // intercept: AI lock (Intercept pattern)
+readonly List<IMyFlightMovementBlock> aiFly = new List<IMyFlightMovementBlock>();     // intercept: AI flies (off otherwise)
+readonly Wc wc = new Wc();                                                        // WeaponCore threats (spotter's turret)
 
 // --- config
 int netId;
 string key = "", role = "Buster", perfMode = "NORMAL", connTag = "", ctlTag = "";
 string engageMode = "STATION", combatTag = "[Combat]", engTag = "[Engage]", disTag = "[Disengage]";
-double maxSpeed, dockSpeed, approach, rtbBatt, linkTimeout, clearance;
-bool provisioned, combatIdleOff = true, inFactory;
+double maxSpeed, dockSpeed, approach, rtbBatt, linkTimeout, clearance, reconSpeed, minAlt, standoff,
+       lidarRange, armDist, fuse, cone, weave, lidarStep, lidarSwath, lidarRate, rays, ringRate, handoff, ringT0;
+bool provisioned, combatIdleOff = true, inFactory, targetNeutral;
 
 // --- runtime state
-double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince;
+double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince, atkT, nextCon;
+int wp, scanI;                                    // recon waypoint, lidar sweep step
+MyDetectedEntityInfo det; double detT = -1e9, detSize;           // best lidar/turret contact
+long atkId; bool handed;                          // attack target; intercept: AI has the controls
+Vector3D atkAz;                                   // attack: chosen approach azimuth (horizontal, from target)
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
 bool registered, controlling, arrived, combatOn, leashBreak;
 long hubAddr;
@@ -105,6 +117,20 @@ void LoadConfig()
     dockSpeed = cfg.D("DockSpeed", 1.5);
     approach = cfg.D("ApproachDistance", 25);
     clearance = cfg.D("Clearance", 15);
+    reconSpeed = cfg.D("ReconSpeed", 60);            // search & destroy: cruise speed while searching
+    minAlt = cfg.D("MinAltitude", 150);              // keep at least this far above the surface on S&D
+    standoff = cfg.D("RingDistance", 2800);          // death ring distance from the target (hub sends its own)
+    cone = cfg.D("RingCone", 20);                    // ring angle off vertical over the target (degrees)
+    ringRate = cfg.D("RingRate", 2);                 // ring rotation (degrees per second)
+    handoff = cfg.D("AiHandoff", 600);               // intercept: hand the controls to the AI blocks inside this range
+    weave = cfg.D("Weave", 30);                      // lateral weave in the dive (m), fades out near the target
+    lidarRange = cfg.D("LidarRange", 3000);          // camera raycast reach while searching (space / high up)
+    lidarStep = Math.Max(5, cfg.D("LidarStep", 50)); // ground-scan grid spacing
+    lidarRate = Math.Max(1, cfg.D("LidarRate", 10)); // raycasts per second, all cameras: each one costs sim speed
+    lidarSwath = cfg.D("LidarSwath", 1100);          // ground-scan width (line spacing + overlap)
+    armDist = cfg.D("ArmDistance", 300);             // warheads arm inside this distance of the target
+    fuse = cfg.D("Fuse", 8);
+    targetNeutral = cfg.B("TargetNeutral", false);    // also hunt neutral / unowned grids                         // proximity detonation (plus half the target size)
     rtbBatt = cfg.D("RtbBattery", 0.2);
     linkTimeout = cfg.D("LinkTimeout", 5);
     connTag = cfg.S("ConnectorTag", "");
@@ -133,7 +159,8 @@ void Scan()
 {
     blocks.Clear();
     GridTerminalSystem.GetBlocksOfType(blocks, b => b.IsSameConstructAs(Me));
-    thr.Clear(); gyr.Clear(); conns.Clear(); combat.Clear(); tEng.Clear(); tDis.Clear(); turrets.Clear();
+    thr.Clear(); gyr.Clear(); conns.Clear(); combat.Clear(); tEng.Clear(); tDis.Clear(); turrets.Clear(); cams.Clear(); heads.Clear(); aiOff.Clear(); aiFly.Clear();
+    if (!wc.Ok) wc.Init(Me);
     ctl = null; conn = null; ant = null;
     IMyShipController anyCtl = null;
     foreach (var b in blocks)
@@ -143,6 +170,10 @@ void Scan()
         var tm = b as IMyTimerBlock;
         if (tm != null) { if (b.CustomName.Contains(engTag)) tEng.Add(tm); else if (b.CustomName.Contains(disTag)) tDis.Add(tm); }
         var tu = b as IMyLargeTurretBase; if (tu != null) turrets.Add(tu);
+        var cm = b as IMyCameraBlock; if (cm != null) { cams.Add(cm); if (!cm.EnableRaycast) cm.EnableRaycast = true; }
+        var wh = b as IMyWarhead; if (wh != null) heads.Add(wh);
+        var ao = b as IMyOffensiveCombatBlock; if (ao != null) aiOff.Add(ao);
+        var af = b as IMyFlightMovementBlock; if (af != null) { aiFly.Add(af); if (af.Enabled && !handed) af.Enabled = false; }
         var t = b as IMyThrust; if (t != null) { thr.Add(t); continue; }
         var g = b as IMyGyro; if (g != null) { gyr.Add(g); continue; }
         var c = b as IMyShipController;
@@ -174,6 +205,7 @@ void Scan()
     if (gyr.Count == 0) w.Append("ERROR: no gyroscopes.\n");
     if (conn == null) w.Append("WARN: no connector" + (connTag.Length > 0 ? " tagged " + connTag : "") + ": cannot dock.\n");
     if (ant == null) w.Append("WARN: no antenna: no hub link.\n");
+    if (cams.Count == 0 && turrets.Count == 0) w.Append("WARN: no camera: cannot search for targets.\n");
     else if (!ant.IsWorking || !ant.EnableBroadcasting) w.Append("WARN: antenna off or not broadcasting.\n");
     if (engageMode == "AI" && combat.Count == 0 && tEng.Count == 0) w.Append("WARN: EngageMode=AI but no " + combatTag + " blocks or " + engTag + " timers.\n");
     warn = w.ToString();
@@ -189,6 +221,10 @@ void Resume()
         case Proto.O_GOTO: Enter(Proto.S_GOTO); break;
         case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
         case Proto.O_HOLD: Enter(Proto.S_HOLD); break;      // stored holdPos
+        case Proto.O_SEARCH: wp = 0; Enter(Proto.S_RECON); break;
+        case Proto.O_ATTACK: atkT = T; atkId = tId; Enter(Proto.S_ATTACK); SetCombat(true); break;
+        case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
+        case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
         case Proto.O_UNDOCK:
             if (pTask != Proto.O_NONE) Enter(Proto.S_UNDOCKING);
             else { CaptureHold(); Enter(Proto.S_HOLD); }
@@ -256,9 +292,10 @@ void Tick()
     fl.Sense(dt);
     if (T >= nextTel) { tel.Read(); nextTel = T + 0.5; }
 
+    if (state == Proto.S_RECON || state == Proto.S_ATTACK || state == Proto.S_LOITER || state == Proto.S_INTERCEPT) Lidar();
     Step();
 
-    if (registered) { if (T >= nextSts) { SendStatus(); nextSts = T + 0.5; } }
+    if (registered) { if (T >= nextSts) { SendStatus(); nextSts = T + 0.5; } if (T >= nextCon) { ReportContact(); nextCon = T + 1; } }
     else if (T >= nextHello) { net.SendHello(role, 0, fl.MaxAccel, maxSpeed, Me.CubeGrid.CustomName); nextHello = T + 3; }
 
     SetFreq();
@@ -306,7 +343,7 @@ void SendStatus()
     if (!docked && !fl.HasThrust) f |= Proto.F_NO_THRUST;
     if (arrived) f |= Proto.F_ARRIVED;
     if (combatOn) f |= Proto.F_ENGAGED;
-    if (!docked) foreach (var t in turrets) if (!t.Closed && t.IsWorking && t.HasTarget) { f |= Proto.F_CONTACT; break; }
+    if (!docked && T - detT < 3) f |= Proto.F_CONTACT;
     long dockId = docked && conn.OtherConnector != null ? conn.OtherConnector.EntityId : 0;
     net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt, tel.H2, tel.Cargo, tel.Integ, tel.Ammo, f);
 }
@@ -320,6 +357,10 @@ void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
         case Proto.O_ESCORT:
         case Proto.O_HOLD:
         case Proto.O_GOTO:
+        case Proto.O_SEARCH:
+        case Proto.O_ATTACK:
+        case Proto.O_LOITER:
+        case Proto.O_INTERCEPT:
             if (connected) { task = code; SetPending(code, a, b, c, id); BeginUndock(); }
             else if (state == Proto.S_UNDOCKING) { task = code; SetPending(code, a, b, c, id); }
             else Execute(code, a, b, c, id);
@@ -365,6 +406,21 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
         case Proto.O_HOLD: CaptureHold(); Enter(Proto.S_HOLD); break;
         case Proto.O_GOTO: CaptureHold(); Enter(Proto.S_GOTO); break;
         case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
+        case Proto.O_SEARCH: wp = 0; Enter(Proto.S_RECON); break;
+        case Proto.O_ATTACK:                           // target fix as of now; dive immediately
+            atkT = T; atkId = id;
+            if (state != Proto.S_ATTACK) { atkAz = Vector3D.Zero; Enter(Proto.S_ATTACK); }
+            if (!combatOn) SetCombat(true);
+            break;
+        case Proto.O_LOITER:
+            atkT = T;
+            if (state != Proto.S_LOITER || id != atkId) { atkId = id; ringT0 = T; atkAz = Vector3D.Zero; }
+            if (state != Proto.S_LOITER && state != Proto.S_INTERCEPT) Enter(Proto.S_LOITER);
+            break;
+        case Proto.O_INTERCEPT:
+            atkT = T; atkId = id;
+            if (state != Proto.S_INTERCEPT) { handed = false; Enter(Proto.S_INTERCEPT); }
+            break;
     }
 }
 
@@ -404,7 +460,8 @@ void BeginUndock()
 void Enter(int s)
 {
     bool flying = s == Proto.S_HOLD || s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_GOTO || s == Proto.S_APPROACH ||
-                  s == Proto.S_FINAL || s == Proto.S_UNDOCKING || s == Proto.S_LINKLOST;
+                  s == Proto.S_FINAL || s == Proto.S_UNDOCKING || s == Proto.S_LINKLOST || s == Proto.S_RECON || s == Proto.S_ATTACK ||
+                  s == Proto.S_LOITER || s == Proto.S_INTERCEPT;
     bool station = s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_ENGAGED;
     if (!station) { leashBreak = false; if (combatOn) SetCombat(false); }
     if (s == Proto.S_DOCKED) { fl.Release(true); DockedPower(true); controlling = false; }
@@ -412,6 +469,8 @@ void Enter(int s)
     else if (!flying) { if (controlling) fl.Release(true); controlling = false; }
     else if (!controlling) { fl.Engage(); controlling = true; }
     fl.Freeze = s == Proto.S_FINAL;
+    if (s != Proto.S_ATTACK && s != Proto.S_INTERCEPT) foreach (var w in heads) if (!w.Closed && w.IsArmed) w.IsArmed = false;
+    if (s != Proto.S_INTERCEPT && handed) { handed = false; foreach (var b in aiFly) if (!b.Closed) b.Enabled = false; }
     state = s; stateT = T;
 }
 
@@ -452,6 +511,18 @@ void Step()
             break;
         case Proto.S_UNDOCKING:
             FlyUndock();
+            break;
+        case Proto.S_RECON:                 // autonomous: keeps going out of hub range
+            FlyRecon();
+            break;
+        case Proto.S_ATTACK:
+            FlyAttack();
+            break;
+        case Proto.S_LOITER:                // autonomous: keeps flying the ring out of hub range
+            FlyLoiter();
+            break;
+        case Proto.S_INTERCEPT:
+            FlyIntercept();
             break;
         case Proto.S_LINKLOST:
             FlyHoldAt(holdPos);
@@ -525,6 +596,167 @@ void FlyStation()
 }
 
 // Turn [Combat] blocks on/off and fire the matching timer blocks
+// ---------------------------------------------------------------- search & destroy
+// SEARCH: tA = start of our track, tB = forward * depth (world). The hub spaces the tracks into a
+// line abreast; each Buster joins its track and sweeps forward along it, nose and cameras ahead.
+// F_ARRIVED at the end of the track.
+void FlyRecon()
+{
+    double depth = tB.Length();
+    Vector3D f = Util.Norm(tB), u = UpRef(ctl.WorldMatrix.Up);
+    double along = Util.Clamp(Vector3D.Dot(fl.Pos - tA, f), 0, depth);
+    Vector3D dest = tA + f * Math.Min(depth, along + Math.Max(300, reconSpeed * 6));
+    fl.FlyTo(Lift(dest), Vector3D.Zero, reconSpeed);
+    Vector3D h = f - u * Vector3D.Dot(f, u);
+    if (h.LengthSquared() > 0.01) holdFwd = Util.Norm(h);
+    fl.Aim(ctl.WorldMatrix, holdFwd, u);
+    arrived = along > depth - 150;
+}
+
+// Target fix: our own lidar ping on tId if fresh, else the hub's last fix extrapolated.
+bool Fix() { return det.EntityId == tId && T - detT < 2; }
+Vector3D AtkPos() { return Fix() ? det.Position + (Vector3D)det.Velocity * (T - detT) : tA + tB * Math.Min(20, T - atkT); }
+Vector3D AtkVel() { return Fix() ? (Vector3D)det.Velocity : tB; }
+
+// LOITER: tC = (slot, slots, ring distance). Death ring RingDistance up a RingCone cone over the
+// target, slots evenly spaced and rotating at RingRate; nose on the target so the cameras keep a fix.
+void FlyLoiter()
+{
+    Vector3D tp = AtkPos(), tv = AtkVel(), u = UpRef(ctl.WorldMatrix.Up), e1 = Util.Norm(Util.Perp(u)), e2 = Vector3D.Cross(u, e1);
+    double R = tC.Z > 1 ? tC.Z : standoff, th = cone * Math.PI / 180, w = ringRate * Math.PI / 180;
+    double a = 2 * Math.PI * tC.X / Math.Max(1, tC.Y) + w * (T - ringT0);
+    Vector3D rad = e1 * Math.Cos(a) + e2 * Math.Sin(a), tan = e2 * Math.Cos(a) - e1 * Math.Sin(a);
+    Vector3D slot = tp + (u * Math.Cos(th) + rad * Math.Sin(th)) * R;
+    fl.FlyTo(Lift(slot), tv + tan * (w * R * Math.Sin(th)), maxSpeed);
+    atkAz = rad;
+    Vector3D to = Util.Norm(tp - fl.Pos);
+    fl.Aim(ctl.WorldMatrix, to, AimUp(to, u));
+    arrived = (slot - fl.Pos).Length() < 100;
+}
+
+// ATTACK: dive from where we are (the ring) at tA + tC (tC = aim offset: our side of the target),
+// full speed through a lead point with a lateral weave that fades out before ArmDistance.
+void FlyAttack()
+{
+    Vector3D tp = AtkPos() + tC, tv = AtkVel(), u = UpRef(ctl.WorldMatrix.Up), to = tp - fl.Pos;
+    double dist = to.Length();
+    if (atkAz.LengthSquared() < 0.5) { Vector3D h = -to - u * Vector3D.Dot(-to, u); atkAz = h.LengthSquared() > 1 ? Util.Norm(h) : Util.Norm(Util.Perp(u)); }
+    double closing = Math.Max(20, Vector3D.Dot(fl.Vel - tv, Util.Norm(to)));
+    Vector3D aim = tp + tv * Math.Min(10, dist / closing), dir = Util.Norm(aim - fl.Pos);
+    Vector3D side = Util.Norm(Vector3D.Cross(dir, atkAz));
+    aim += side * (weave * Util.Clamp((dist - armDist) / Math.Max(1, standoff - armDist), 0, 1) * Math.Sin(T * 1.6 + tC.X * 0.01));
+    Terminal(aim, dir, tv, dist, u, Fix() ? detSize * 0.4 : 0);
+}
+
+// full speed at a point past the aim point (no braking), warheads armed inside ArmDistance
+void Terminal(Vector3D aim, Vector3D dir, Vector3D tv, double dist, Vector3D u, double size)
+{
+    fl.FlyTo(aim + dir * 300, tv, maxSpeed);
+    fl.Aim(ctl.WorldMatrix, dir, AimUp(dir, u));
+    bool arm = dist < armDist;
+    foreach (var w in heads) if (!w.Closed && w.IsArmed != arm) w.IsArmed = arm;
+    if (arm && dist < fuse + size) foreach (var w in heads) if (!w.Closed) w.Detonate();
+}
+
+// INTERCEPT a launched drone: chase the hub/lidar fix; inside AiHandoff give the controls to the
+// AI Flight + AI Offensive (Intercept, Closest) blocks with warheads armed. Without AI blocks the
+// script rams it itself.
+void FlyIntercept()
+{
+    if (handed) return;
+    Vector3D tp = AtkPos(), tv = AtkVel(), u = UpRef(ctl.WorldMatrix.Up), to = tp - fl.Pos;
+    double dist = to.Length();
+    if (atkAz.LengthSquared() < 0.5) atkAz = Util.Norm(Util.Perp(u));
+    if (dist < handoff && aiFly.Count > 0 && aiOff.Count > 0)
+    {
+        fl.Release(true); controlling = false; handed = true;
+        foreach (var b in aiFly) if (!b.Closed) b.Enabled = true;
+        foreach (var b in aiOff) if (!b.Closed && !b.Enabled) b.Enabled = true;
+        foreach (var w in heads) if (!w.Closed) w.IsArmed = true;
+        return;
+    }
+    double closing = Math.Max(20, Vector3D.Dot(fl.Vel - tv, Util.Norm(to)));
+    Vector3D aim = tp + tv * Math.Min(10, dist / closing);
+    Terminal(aim, Util.Norm(aim - fl.Pos), tv, dist, u, Fix() ? detSize * 0.4 : 0);
+}
+
+// roll reference: gravity-up when flying level, the approach azimuth when pointing steeply down
+Vector3D AimUp(Vector3D f, Vector3D u) { return Math.Abs(Vector3D.Dot(f, u)) > 0.7 ? atkAz : u; }
+
+// Camera lidar, capped at LidarRate rays/s (a raycast into terrain is a costly physics query; many
+// Buster x many rays kills sim speed). Over a planet while searching: a grid of ground points ahead,
+// LidarSwath wide, LidarStep apart, one band just inside the camera's 45 deg cone. Elsewhere: a fan.
+// Attacking: ping the target to home on it. Opportunistic: designators are the reliable source.
+static readonly float[] Pitches = { -6, -15, -28 };
+void Lidar()
+{
+    rays = Math.Min(lidarRate, rays + lidarRate * Math.Max(0, Math.Min(0.2, Runtime.TimeSinceLastRun.TotalSeconds)));
+    double e = 0;
+    bool ground = state == Proto.S_RECON && fl.Grav.LengthSquared() > 0.01
+                  && ctl.TryGetPlanetElevation(MyPlanetElevation.Surface, out e) && e < 1500;
+    Vector3D u = UpRef(ctl.WorldMatrix.Up), f = holdFwd, r = Vector3D.Cross(f, u);
+    double half = lidarSwath / 2, near = Math.Sqrt(half * half + e * e) + 60;
+    int cols = (int)(lidarSwath / lidarStep) + 1;
+    foreach (var c in cams)
+    {
+        if (c.Closed || !c.IsWorking || rays < 1) continue;
+        Vector3D cp = c.GetPosition();
+        if (state != Proto.S_RECON)
+        {
+            if (handed) continue;
+            Vector3D tp = AtkPos();
+            double d = (tp - cp).Length() + 50;
+            if (d < lidarRange * 2 && c.CanScan(d)) { rays--; Seen(c.Raycast(tp)); }
+            continue;
+        }
+        if (ground)
+        {
+            while (rays >= 1)
+            {
+                int col = scanI % cols;
+                Vector3D gp = fl.Pos - u * e + f * near + r * (-half + col * lidarStep);
+                Vector3D ray = (gp - cp) * 1.15;      // a little past the ground point
+                if (!c.CanScan(ray.Length())) break;
+                scanI++; rays--;
+                Seen(c.Raycast(cp + ray));
+            }
+            continue;
+        }
+        if (!c.CanScan(lidarRange)) continue;
+        int yi = scanI % 9, pi = (scanI / 9) % Pitches.Length;
+        scanI++; rays--;
+        Seen(c.Raycast(lidarRange, Pitches[pi], -40 + yi * 10));
+    }
+}
+
+// keep the biggest enemy grid seen lately (and always refresh the attack target)
+void Seen(MyDetectedEntityInfo e)
+{
+    if (e.IsEmpty()) return;
+    var rel = e.Relationship;
+    if (rel != MyRelationsBetweenPlayerAndBlock.Enemies && !(targetNeutral && (rel == MyRelationsBetweenPlayerAndBlock.Neutral || rel == MyRelationsBetweenPlayerAndBlock.NoOwnership))) return;
+    if (e.Type != MyDetectedEntityType.SmallGrid && e.Type != MyDetectedEntityType.LargeGrid) return;
+    double s = e.BoundingBox.Size.Length();
+    if (T - detT > 3 || s >= detSize || e.EntityId == det.EntityId || e.EntityId == tId) { det = e; detSize = s; detT = T; }
+}
+
+// Send the hub what we see (lidar, plus turret locks on drones that have turrets)
+void ReportContact()
+{
+    foreach (var t in turrets) if (!t.Closed && t.IsWorking && t.HasTarget) Seen(t.GetTargetedEntity());
+    if (wc.Ok) foreach (var kv in wc.Threats(Me)) Seen(kv.Key);
+    if (T - detT < 2) net.SendContact(hubAddr, det.EntityId, (int)det.Type, detSize, det.Position, det.Velocity);
+}
+
+// Raise a destination so the drone stays MinAltitude above the ground under it (planets only)
+Vector3D Lift(Vector3D p)
+{
+    double e;
+    if (fl.Grav.LengthSquared() < 0.01 || !ctl.TryGetPlanetElevation(MyPlanetElevation.Surface, out e) || e >= minAlt) return p;
+    Vector3D u = -Util.Norm(fl.Grav);
+    return p + u * (Vector3D.Dot(fl.Pos - p, u) + (minAlt - e));
+}
+
 void SetCombat(bool on)
 {
     if (on || combatIdleOff) foreach (var b in combat) if (!b.Closed && b.Enabled != on) b.Enabled = on;
@@ -610,30 +842,53 @@ void FlyUndock()
     }
 }
 
-// Route around the hub keep-out sphere if the straight path crosses it
+// Route around the hub's hull (its box from NAV, grown by Clearance) only when the straight path
+// actually crosses it. The detour is on the drone's own side of the hull, so a formation keeps its
+// shape: abreast drones simply drift past a stopping carrier and creep back to their slots.
 Vector3D Avoid(Vector3D tgt, MatrixD m)
 {
-    if (!hub.Valid) return tgt;
-    Vector3D c = hub.KeepOut(T);
-    double R = hub.KoR + clearance;
-    Vector3D p = fl.Pos, seg = tgt - p;
-    double L2 = seg.LengthSquared();
-    if (L2 < 1) return tgt;
-    double s = Util.Clamp(Vector3D.Dot(c - p, seg) / L2, 0, 1);
-    if (s <= 0.02 || s >= 0.98) return tgt;
-    double d = (p - c).Length();
-    if (d < R * 0.95)
+    if (!hub.Valid || hub.BoxH.LengthSquared() < 1) return tgt;
+    Vector3D h = hub.BoxH + new Vector3D(clearance), bc = hub.BoxC;
+    Vector3D p = HubFrame.ToLocal(m, fl.Pos) - bc, t = HubFrame.ToLocal(m, tgt) - bc;
+    if (InBox(p, h))
     {
-        // Inside (e.g. just off a dock): if the target lies further out, leave radially first
-        // instead of cutting back across the hull and the docked drones. Docking (target
-        // deeper in) and final settling (target close) still go direct.
-        if ((tgt - c).Length() > d + 5 && (tgt - p).Length() > clearance) return c + Util.Norm(p - c) * R;
-        return tgt;
+        // inside the margin (e.g. just off a dock): leave across the nearest face first,
+        // unless the target is in here too (docking) or close
+        if (InBox(t, h) || (t - p).Length() < clearance) return tgt;
+        return HubFrame.ToWorld(m, bc + OutOf(p, h, 1.1));
     }
-    Vector3D q = p + seg * s, off = q - c;
-    if (off.Length() >= R) return tgt;
-    if (off.LengthSquared() < 1e-6) off = Util.Perp(seg);
-    return c + Util.Norm(off) * R * 1.15;
+    if (!SegHits(p, t, h)) return tgt;
+    Vector3D d = t - p;
+    Vector3D q = p + d * Util.Clamp(-Vector3D.Dot(p, d) / Math.Max(1e-6, d.LengthSquared()), 0, 1);
+    return HubFrame.ToWorld(m, bc + OutOf(q, h, 1.2));
+}
+
+static double Dim(Vector3D v, int i) { return i == 0 ? v.X : i == 1 ? v.Y : v.Z; }
+static bool InBox(Vector3D v, Vector3D h) { return Math.Abs(v.X) < h.X && Math.Abs(v.Y) < h.Y && Math.Abs(v.Z) < h.Z; }
+
+// v pushed out across the box face it is nearest to (by relative depth), other axes kept
+static Vector3D OutOf(Vector3D v, Vector3D h, double k)
+{
+    int ax = 0; double best = -1;
+    for (int i = 0; i < 3; i++) { double r = Math.Abs(Dim(v, i)) / Math.Max(1, Dim(h, i)); if (r > best) { best = r; ax = i; } }
+    double s = Dim(v, ax) < 0 ? -1 : 1, e = s * Dim(h, ax) * k;
+    return new Vector3D(ax == 0 ? e : v.X, ax == 1 ? e : v.Y, ax == 2 ? e : v.Z);
+}
+
+// segment p->t against the box [-h, h] (slab test)
+static bool SegHits(Vector3D p, Vector3D t, Vector3D h)
+{
+    double t0 = 0, t1 = 1;
+    for (int i = 0; i < 3; i++)
+    {
+        double pi = Dim(p, i), di = Dim(t, i) - pi, hi = Dim(h, i);
+        if (Math.Abs(di) < 1e-9) { if (pi < -hi || pi > hi) return false; continue; }
+        double a = (-hi - pi) / di, b = (hi - pi) / di;
+        if (a > b) { double x = a; a = b; b = x; }
+        t0 = Math.Max(t0, a); t1 = Math.Min(t1, b);
+        if (t0 > t1) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -670,7 +925,7 @@ void BuildEcho()
     else sb.Append("Net ").Append(netId).Append("   Hub: ").Append(registered ? (NavFresh() ? "linked" : "NO SIGNAL") : "searching...").Append('\n');
     sb.Append("Battery ").Append(Util.Pct(tel.Batt)).Append("   Hull ").Append(Util.Pct(tel.Integ)).Append("   Speed ").Append((int)fl.Vel.Length()).Append(" m/s\n");
     sb.Append("Engage mode ").Append(engageMode).Append("   Combat ").Append(combatOn ? "ON" : "off")
-      .Append("   (").Append(combat.Count).Append(" blocks, ").Append(turrets.Count).Append(" turrets)\n");
+      .Append("   (").Append(heads.Count).Append(" warheads, ").Append(cams.Count).Append(" cameras, ").Append(aiOff.Count + aiFly.Count).Append(" AI)").Append(handed ? "  AI FLYING" : "").Append("\n");
     sb.Append(perf.Text()).Append('\n');
     sb.Append(warn);
     echo = sb.ToString();

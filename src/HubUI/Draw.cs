@@ -47,6 +47,8 @@ static Color StateColor(Row r)
         case Proto.S_APPROACH: case Proto.S_FINAL: case Proto.S_UNDOCKING: return C_VIO;
         case Proto.S_DOCKED: return C_DOCK;
         case Proto.S_LINKLOST: return C_ORANGE;
+        case Proto.S_RECON: return C_ACC;
+        case Proto.S_ATTACK: return C_BAD;
         case Proto.S_ERROR: return C_BAD;
         default: return C_DIM;
     }
@@ -320,6 +322,56 @@ void DrawMap(IMyTextSurface s)
 
     Txt(ref f, "OUT " + outN + "   ENGAGED " + engaged + "   DOCKED " + docked + "   LOST " + lost + "   DEF " + (hDefense ? "ON" : "OFF"),
         x0 + 12 * k, y0 + H - 30 * k, 0.45f * k, C_TXT);
+    f.Dispose();
+}
+
+// ============================================================================
+// Defense menu: arrow-key control of the defense manager.
+// up/down = setting, left/right = value, apply = send ("def up" etc. on the Hub UI PB).
+// ============================================================================
+void DrawDefense(IMyTextSurface s)
+{
+    Prepare(s);
+    Vector2 sz = s.SurfaceSize, o = (s.TextureSize - sz) / 2f;
+    float W = sz.X, H = sz.Y, k = Scale(W, H, 360, 296), x0 = o.X, y0 = o.Y;
+    bool linked = Linked();
+    var f = s.DrawFrame();
+    if (flip) f.Add(new MySprite());
+    Box(ref f, x0, y0, W, H, C_BG);
+    Box(ref f, x0, y0, W, 40 * k, C_PANEL);
+    Box(ref f, x0, y0 + 38 * k, W, 2 * k, C_ACC);
+    Txt(ref f, linked ? "DEFENSE" : "DEFENSE: NO LINK", x0 + 8 * k, y0 + 6 * k, 0.75f * k, linked ? C_ACC : C_BAD);
+    if (linked) AlertBadge(ref f, x0 + W - 6 * k, y0 + 8 * k, k);
+
+    float rowH = 27 * k, y = y0 + 46 * k, ts = 0.6f * k;
+    for (int i = 0; i < DefNames.Length; i++, y += rowH)
+    {
+        bool sel = i == defItem;
+        if (sel) Box(ref f, x0 + 2 * k, y, W - 4 * k, rowH - 2 * k, C_SEL);
+        bool action = DefOpts[i].Length == 1;
+        Color nc = action ? (i == 6 ? C_BAD : C_WARN) : i <= 2 ? C_ORANGE : C_TXT;
+        Txt(ref f, DefNames[i], x0 + 10 * k, y + 2 * k, ts, nc);
+        int now = DefCurrent(i);
+        string val;
+        if (action) val = sel ? "[ APPLY ]" : "";
+        else
+        {
+            int shown = sel ? defOpt : now;
+            val = sel ? "<  " + DefOpts[i][shown] + "  >" : DefOpts[i][shown];
+            if (i == 3 && shown == 0) val = sel ? "<  AUTO  >" : "AUTO (" + Proto.AlertName(hAlert) + ")";
+            if (i == 0 && !sel) val = (hSad & 1) != 0 ? "SEARCHING" : "OFF";
+            if (i == 2 && !sel) val = (hSad & 4) != 0 ? "ON RING" : (hSad & 2) != 0 ? "TARGET SET" : "NO TARGET";
+        }
+        Txt(ref f, val, x0 + W * 0.56f, y + 2 * k, ts, sel ? C_ACC : C_DIM, TextAlignment.CENTER);
+        if (sel && !action && i != 2 && defOpt != now) Txt(ref f, "now " + DefOpts[i][now], x0 + W - 8 * k, y + 5 * k, 0.45f * k, C_DIM, TextAlignment.RIGHT);
+    }
+
+    int outN = 0, dock = 0;
+    foreach (var r in rows) { if (r.LostS >= 0) continue; if (r.State == Proto.S_DOCKED) dock++; else outN++; }
+    float fy = y0 + H - 26 * k;
+    Box(ref f, x0, fy - 4 * k, W, 2 * k, C_PANEL);
+    bool fresh = T - defMsgT < 4;
+    Txt(ref f, fresh ? defMsg : "OUT " + outN + "   DOCKED " + dock + "   arrows: pick, apply: send", x0 + 8 * k, fy, 0.48f * k, fresh ? C_GOOD : C_DIM);
     f.Dispose();
 }
 
