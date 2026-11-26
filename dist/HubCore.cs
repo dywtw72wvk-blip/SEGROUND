@@ -653,6 +653,10 @@ void SetJumpDrives(bool on) { foreach (var j in jumpDrives) if (!j.Closed && j.E
 // repair/rearm on demand + jump interlock (2 Hz from Tasking)
 void Logistics()
 {
+    // Right after a paste/load, lock any dock that has a drone sitting in range
+    // (pre-docked blueprints). Only during start-up, so undocking drones are never re-grabbed.
+    if (T < 30) foreach (var c in docks.List) if (!c.Closed && c.Status == MyShipConnectorStatus.Connectable) c.Connect();
+
     bool dmg = false, any = false, allDocked = true;
     foreach (var d in reg.Values)
     {

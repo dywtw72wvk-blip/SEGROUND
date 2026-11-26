@@ -8,3 +8,4 @@ FS Carrier Atmo: 586 blocks, 606.9 t, 27.5 x 30.0 x 70.0 m (W x H x L)
   accel m/s^2: Up 26.9, Forward 9.6, Backward 9.6, Left 2.9, Right 2.9, Down 0.0
   centre of mass (cells): x 4.02  y 2.71  z 11.55
   lift TWR at 1 g, sea level: 2.22
+FS Carrier Atmo + 8 Busters: carrier + 8 docked Busters (connector faces 0.05 m apart, clearance checked)

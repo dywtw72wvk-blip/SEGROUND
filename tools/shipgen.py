@@ -133,48 +133,47 @@ class Ship:
                     twr=lift / (mass * G), accel={d: push[d] / mass for d in push})
 
     # ------------------------------------------------------------ XML
-    def xml(self, code):
+    def eid(self, inst, i):
+        return int(hashlib.sha1(f"{self.name}/{inst}/{i}".encode()).hexdigest()[:15], 16)
+
+    def grid_xml(self, code, inst="0", pos=(0, 0, 0), fwd=(0, 0, -1), up=(0, 1, 0), quat=(0, 0, 0, 1), extra=None):
+        """One <CubeGrid>. extra: {block index: xml} appended to that block (e.g. connector links)."""
+        extra = extra or {}
         lines = []
         for i, b in enumerate(self.blocks):
             t, sub, *_ = B[b["key"]]
-            eid = int(hashlib.sha1(f"{self.name}/{i}".encode()).hexdigest()[:15], 16)
             mn = b["min"]
             sub_xml = f"<SubtypeName>{sub}</SubtypeName>" if sub else "<SubtypeName />"
-            s = [f'        <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_{t}">',
-                 f"          {sub_xml}",
-                 f"          <EntityId>{eid}</EntityId>",
-                 f'          <Min x="{mn[0]}" y="{mn[1]}" z="{mn[2]}" />',
-                 f'          <BlockOrientation Forward="{b["fwd"]}" Up="{b["up"]}" />',
-                 '          <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />']
+            s = [f'            <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_{t}">',
+                 f"              {sub_xml}",
+                 f"              <EntityId>{self.eid(inst, i)}</EntityId>",
+                 f'              <Min x="{mn[0]}" y="{mn[1]}" z="{mn[2]}" />',
+                 f'              <BlockOrientation Forward="{b["fwd"]}" Up="{b["up"]}" />',
+                 '              <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />']
             if b["name"]:
-                s.append(f"          <CustomName>{escape(b['name'])}</CustomName>")
+                s.append(f"              <CustomName>{escape(b['name'])}</CustomName>")
             if b["extra"]:
-                s.append("          " + b["extra"])
+                s.append("              " + b["extra"])
+            if i in extra:
+                s.append("              " + extra[i])
             if b["program"]:
-                s.append(f"          <Program>{escape(code[b['program']])}</Program>")
-            s.append("        </MyObjectBuilder_CubeBlock>")
+                s.append(f"              <Program>{escape(code[b['program']])}</Program>")
+            s.append("            </MyObjectBuilder_CubeBlock>")
             lines.append("\n".join(s))
-        gid = int(hashlib.sha1(self.name.encode()).hexdigest()[:15], 16)
-        return f"""<?xml version="1.0"?>
-<Definitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-  <ShipBlueprints>
-    <ShipBlueprint xsi:type="MyObjectBuilder_ShipBlueprintDefinition">
-      <Id Type="MyObjectBuilder_ShipBlueprintDefinition" Subtype="{escape(self.name)}" />
-      <DisplayName>{escape(self.name)}</DisplayName>
-      <CubeGrids>
-        <CubeGrid>
+        f = lambda v: " ".join(f'{a}="{c:g}"' for a, c in zip("xyz", v))
+        return f"""        <CubeGrid>
           <SubtypeName />
-          <EntityId>{gid}</EntityId>
+          <EntityId>{int(hashlib.sha1(f"{self.name}/{inst}/grid".encode()).hexdigest()[:15], 16)}</EntityId>
           <PersistentFlags>CastShadows InScene</PersistentFlags>
           <PositionAndOrientation>
-            <Position x="0" y="0" z="0" />
-            <Forward x="0" y="0" z="-1" />
-            <Up x="0" y="1" z="0" />
+            <Position {f(pos)} />
+            <Forward {f(fwd)} />
+            <Up {f(up)} />
             <Orientation>
-              <X>0</X>
-              <Y>0</Y>
-              <Z>0</Z>
-              <W>1</W>
+              <X>{quat[0]:g}</X>
+              <Y>{quat[1]:g}</Y>
+              <Z>{quat[2]:g}</Z>
+              <W>{quat[3]:g}</W>
             </Orientation>
           </PositionAndOrientation>
           <GridSizeEnum>{self.grid}</GridSizeEnum>
@@ -185,7 +184,24 @@ class Ship:
           <DestructibleBlocks>true</DestructibleBlocks>
           <IsRespawnGrid>false</IsRespawnGrid>
           <LocalCoordSys>0</LocalCoordSys>
-        </CubeGrid>
+        </CubeGrid>"""
+
+    def xml(self, code):
+        return blueprint_xml(self.name, [self.grid_xml(code)])
+
+    def index_of(self, name):
+        return next(i for i, b in enumerate(self.blocks) if b["name"] == name)
+
+
+def blueprint_xml(name, grids):
+    return f"""<?xml version="1.0"?>
+<Definitions xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ShipBlueprints>
+    <ShipBlueprint xsi:type="MyObjectBuilder_ShipBlueprintDefinition">
+      <Id Type="MyObjectBuilder_ShipBlueprintDefinition" Subtype="{escape(name)}" />
+      <DisplayName>{escape(name)}</DisplayName>
+      <CubeGrids>
+{chr(10).join(grids)}
       </CubeGrids>
       <EnvironmentType>None</EnvironmentType>
       <WorkshopId>0</WorkshopId>
@@ -296,6 +312,82 @@ def report(s, cargo=0, note=""):
     return lines, st
 
 
+# ======================================================================
+# FS Carrier Atmo + 8 Busters: the carrier with a Buster docked at every
+# [Dock] connector. Each Buster is rotated nose-in (left docks: nose +X,
+# right docks: nose -X, upright) and placed so its connector face sits
+# DOCK_GAP metres from the carrier connector face; the connector pairs are
+# written as connected, and Hub Core also locks occupied docks at start-up.
+# ======================================================================
+DOCK_GAP = 0.05
+LG, SG = 2.5, 0.5
+
+
+def rot_y(v, deg):
+    a = math.radians(deg)
+    return (v[0] * math.cos(a) + v[2] * math.sin(a), v[1], -v[0] * math.sin(a) + v[2] * math.cos(a))
+
+
+def combined(carrier_ship, buster_ship, code):
+    c_conn = [(i, b) for i, b in enumerate(carrier_ship.blocks) if b["key"] == "l_connector"]
+    bi = buster_ship.index_of("Connector")
+    bconn = buster_ship.blocks[bi]
+    # buster connector face centre in buster-local metres (face on the -Z side of its min cell row)
+    bc = [sum(c[k] for c in bconn["cells"]) / len(bconn["cells"]) * SG for k in range(3)]
+    zmin = min(c[2] for c in bconn["cells"])
+    b_face = (bc[0], bc[1], (zmin - 0.5) * SG)
+    grids, c_extra = [], {}
+    world_cells = []   # (centre, half) boxes of every docked buster block, for the clearance check
+    for n, (ci, cb) in enumerate(c_conn):
+        d = DIRS[cb["fwd"]]                       # carrier connector facing (world, carrier at origin)
+        cc = [cb["cells"][0][k] * LG for k in range(3)]
+        face = tuple(cc[k] + d[k] * (LG / 2 + DOCK_GAP) for k in range(3))
+        # buster forward must point back at the carrier: -d. Rotation about Y mapping (0,0,-1) -> -d
+        deg = {(-1, 0, 0): -90, (1, 0, 0): 90}[d]
+        fwd = rot_y((0, 0, -1), deg)
+        assert all(abs(fwd[k] + d[k]) < 1e-9 for k in range(3))
+        off = rot_y(b_face, deg)
+        pos = tuple(face[k] - off[k] for k in range(3))
+        half = math.radians(deg) / 2
+        quat = (0, math.sin(half), 0, math.cos(half))
+        inst = f"dock{n}"
+        c_extra[ci] = f"<ConnectedEntityId>{buster_ship.eid(inst, bi)}</ConnectedEntityId><IsMaster>true</IsMaster>"
+        b_extra = {bi: f"<ConnectedEntityId>{carrier_ship.eid('0', ci)}</ConnectedEntityId><IsMaster>false</IsMaster>"}
+        grids.append(buster_ship.grid_xml(code, inst, pos, tuple(round(v, 9) for v in fwd), (0, 1, 0), quat, b_extra))
+        for blk in buster_ship.blocks:
+            for cell in blk["cells"]:
+                w = rot_y(tuple(cell[k] * SG for k in range(3)), deg)
+                world_cells.append((tuple(pos[k] + w[k] for k in range(3)), SG / 2, cb["name"], blk["name"] or blk["key"]))
+        # docking geometry self-check: connector faces DOCK_GAP apart, facing each other
+        bf = rot_y(b_face, deg)
+        gap = math.dist(tuple(pos[k] + bf[k] for k in range(3)), tuple(cc[k] + d[k] * LG / 2 for k in range(3)))
+        assert abs(gap - DOCK_GAP) < 1e-6, gap
+    # clearance: no docked buster block may intersect a carrier block or another buster
+    carrier_boxes = [(tuple(c[k] * LG for k in range(3)), LG / 2, blk["name"] or blk["key"]) for blk in carrier_ship.blocks for c in blk["cells"]]
+    eps = 1e-6
+    def hit(a, ha, b, hb):
+        return all(abs(a[k] - b[k]) < ha + hb - eps for k in range(3))
+    for (wc, h, dock, what) in world_cells:
+        for (cc2, hc, cname) in carrier_boxes:
+            if hit(wc, h, cc2, hc):
+                raise ValueError(f"Buster at {dock}: {what} intersects carrier block {cname}")
+    by_dock = {}
+    for (wc, h, dock, what) in world_cells:
+        by_dock.setdefault(dock, []).append(wc)
+    docks = list(by_dock)
+    def aabb(cells):
+        return [min(c[k] for c in cells) - SG / 2 for k in range(3)], [max(c[k] for c in cells) + SG / 2 for k in range(3)]
+    boxes = {dk: aabb(by_dock[dk]) for dk in docks}
+    for i in range(len(docks)):
+        for j in range(i + 1, len(docks)):
+            (alo, ahi), (blo, bhi) = boxes[docks[i]], boxes[docks[j]]
+            if all(alo[k] < bhi[k] - eps and blo[k] < ahi[k] - eps for k in range(3)):
+                if any(hit(p, SG / 2, q, SG / 2) for p in by_dock[docks[i]] for q in by_dock[docks[j]]):
+                    raise ValueError(f"Busters at {docks[i]} and {docks[j]} intersect")
+    name = "FS Carrier Atmo + 8 Busters"
+    return name, blueprint_xml(name, [carrier_ship.grid_xml(code, "0", extra=c_extra)] + grids)
+
+
 def main():
     code = {k: (DIST / f"{k}.cs").read_text(encoding="utf-8").replace("\r\n", "\n") for k in ("Drone", "HubCore", "HubUI")}
     OUT.mkdir(exist_ok=True)
@@ -310,6 +402,12 @@ def main():
         d = OUT / s.name
         d.mkdir(exist_ok=True)
         (d / "bp.sbc").write_text(s.xml(code), encoding="utf-8")
+    cname, cxml = combined(c, b, code)
+    d = OUT / cname
+    d.mkdir(exist_ok=True)
+    (d / "bp.sbc").write_text(cxml, encoding="utf-8")
+    summary.append(f"{cname}: carrier + {len(cxml.split('<CubeGrid>')) - 2} docked Busters (connector faces {DOCK_GAP} m apart, clearance checked)")
+    print(summary[-1])
     (OUT / "STATS.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
     print(f"wrote {OUT}/<name>/bp.sbc")
 
