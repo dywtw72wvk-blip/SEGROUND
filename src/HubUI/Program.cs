@@ -19,9 +19,11 @@ readonly List<IMyTextSurface> fleetSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> mapSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> hangarSurf = new List<IMyTextSurface>();
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
+readonly HashSet<IMyTextSurface> compactSurf = new HashSet<IMyTextSurface>();   // cockpit screens
 string fleetTag = "FS:Fleet", mapTag = "FS:Map", hangarTag = "FS:Hangar";
 double T, snapT = -1e9, nextScan;
-bool flip;
+bool flip, cockpitCompact, cpt;
+float cockpitZoom = 1;
 
 // snapshot from Hub Core
 int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert, hJump;
@@ -70,6 +72,8 @@ void LoadConfig()
     fleetTag = cfg.S("FleetTag", "FS:Fleet");
     mapTag = cfg.S("MapTag", "FS:Map");
     hangarTag = cfg.S("HangarTag", "FS:Hangar");
+    cockpitCompact = cfg.B("CockpitCompact", true);   // big-text layout on cockpit screens
+    cockpitZoom = (float)Math.Max(0.5, Math.Min(3, cfg.D("CockpitZoom", 1.0)));
     cfg.Save();
     net.Configure(netId, "");
     if (snapL != null) IGC.DisableBroadcastListener(snapL);
@@ -78,6 +82,7 @@ void LoadConfig()
 
 void Scan()
 {
+    compactSurf.Clear();
     Collect(fleetTag, fleetSurf);
     Collect(mapTag, mapSurf);
     Collect(hangarTag, hangarSurf);
@@ -93,7 +98,10 @@ void Collect(string tag, List<IMyTextSurface> into)
     {
         var p = (IMyTextSurfaceProvider)b;
         int idx = TagIndex(b.CustomName, tag);
-        if (idx < p.SurfaceCount) into.Add(p.GetSurface(idx));
+        if (idx >= p.SurfaceCount) continue;
+        var s = p.GetSurface(idx);
+        into.Add(s);
+        if (cockpitCompact && b is IMyShipController) compactSurf.Add(s);
     }
 }
 
@@ -229,7 +237,7 @@ void Parse(string s)
 void Render()
 {
     flip = !flip;
-    foreach (var s in fleetSurf) DrawFleet(s);
-    foreach (var s in mapSurf) DrawMap(s);
-    foreach (var s in hangarSurf) DrawHangar(s);
+    foreach (var s in fleetSurf) { cpt = compactSurf.Contains(s); DrawFleet(s); }
+    foreach (var s in mapSurf) { cpt = compactSurf.Contains(s); DrawMap(s); }
+    foreach (var s in hangarSurf) { cpt = compactSurf.Contains(s); DrawHangar(s); }
 }

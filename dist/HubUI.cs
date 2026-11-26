@@ -22,9 +22,11 @@ readonly List<IMyTextSurface> fleetSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> mapSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> hangarSurf = new List<IMyTextSurface>();
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
+readonly HashSet<IMyTextSurface> compactSurf = new HashSet<IMyTextSurface>();   // cockpit screens
 string fleetTag = "FS:Fleet", mapTag = "FS:Map", hangarTag = "FS:Hangar";
 double T, snapT = -1e9, nextScan;
-bool flip;
+bool flip, cockpitCompact, cpt;
+float cockpitZoom = 1;
 
 // snapshot from Hub Core
 int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert, hJump;
@@ -73,6 +75,8 @@ void LoadConfig()
     fleetTag = cfg.S("FleetTag", "FS:Fleet");
     mapTag = cfg.S("MapTag", "FS:Map");
     hangarTag = cfg.S("HangarTag", "FS:Hangar");
+    cockpitCompact = cfg.B("CockpitCompact", true);   // big-text layout on cockpit screens
+    cockpitZoom = (float)Math.Max(0.5, Math.Min(3, cfg.D("CockpitZoom", 1.0)));
     cfg.Save();
     net.Configure(netId, "");
     if (snapL != null) IGC.DisableBroadcastListener(snapL);
@@ -81,6 +85,7 @@ void LoadConfig()
 
 void Scan()
 {
+    compactSurf.Clear();
     Collect(fleetTag, fleetSurf);
     Collect(mapTag, mapSurf);
     Collect(hangarTag, hangarSurf);
@@ -96,7 +101,10 @@ void Collect(string tag, List<IMyTextSurface> into)
     {
         var p = (IMyTextSurfaceProvider)b;
         int idx = TagIndex(b.CustomName, tag);
-        if (idx < p.SurfaceCount) into.Add(p.GetSurface(idx));
+        if (idx >= p.SurfaceCount) continue;
+        var s = p.GetSurface(idx);
+        into.Add(s);
+        if (cockpitCompact && b is IMyShipController) compactSurf.Add(s);
     }
 }
 
@@ -232,9 +240,9 @@ void Parse(string s)
 void Render()
 {
     flip = !flip;
-    foreach (var s in fleetSurf) DrawFleet(s);
-    foreach (var s in mapSurf) DrawMap(s);
-    foreach (var s in hangarSurf) DrawHangar(s);
+    foreach (var s in fleetSurf) { cpt = compactSurf.Contains(s); DrawFleet(s); }
+    foreach (var s in mapSurf) { cpt = compactSurf.Contains(s); DrawMap(s); }
+    foreach (var s in hangarSurf) { cpt = compactSurf.Contains(s); DrawHangar(s); }
 }
 
 // ============================================================================
@@ -246,6 +254,13 @@ static readonly Color C_BG = new Color(4, 10, 18), C_PANEL = new Color(14, 30, 4
                       C_SEL = new Color(0, 64, 104), C_GOOD = new Color(60, 220, 110), C_WARN = new Color(255, 190, 40),
                       C_BAD = new Color(255, 70, 60), C_DOCK = new Color(90, 140, 255), C_VIO = new Color(190, 120, 255),
                       C_ORANGE = new Color(255, 130, 40);
+
+// Layout scale. Big LCDs: the 512 reference. Cockpit screens (cpt) are small, wide and 256 px,
+// so their layout drops detail and is scaled to fill the reference size it really needs.
+float Scale(float W, float H, float wref, float href)
+{
+    return cpt ? Math.Min(W / wref, H / href) * cockpitZoom : Math.Min(W, H) / 512f;
+}
 
 static void Box(ref MySpriteDrawFrame f, float x, float y, float w, float h, Color c)
 {
@@ -314,9 +329,53 @@ void Prepare(IMyTextSurface s)
     if (s.ScriptBackgroundColor != C_BG) s.ScriptBackgroundColor = C_BG;
 }
 
+// Cockpit version: callsign / state / batt / hull, one action selector, last event.
+void DrawFleetCompact(IMyTextSurface s)
+{
+    Vector2 sz = s.SurfaceSize, o = (s.TextureSize - sz) / 2f;
+    float W = sz.X, H = sz.Y, k = Scale(W, H, 360, 230), x0 = o.X, y0 = o.Y;
+    var f = s.DrawFrame();
+    if (flip) f.Add(new MySprite());
+    Box(ref f, x0, y0, W, H, C_BG);
+    bool linked = Linked();
+    Box(ref f, x0, y0, W, 40 * k, C_PANEL);
+    Box(ref f, x0, y0 + 38 * k, W, 2 * k, C_ACC);
+    Txt(ref f, linked ? "FLEET  " + hOnline + "/" + rows.Count : "FLEET: NO LINK", x0 + 8 * k, y0 + 6 * k, 0.75f * k, linked ? C_ACC : C_BAD);
+    if (linked) AlertBadge(ref f, x0 + W - 6 * k, y0 + 8 * k, k);
+
+    float[] cx = { x0 + 0.04f * W, x0 + 0.36f * W, x0 + 0.64f * W, x0 + 0.84f * W };
+    float rowH = 26 * k, rowsTop = y0 + 46 * k, footer = 62 * k, ts = 0.6f * k;
+    int maxRows = Math.Max(1, (int)((y0 + H - footer - rowsTop) / rowH));
+    int total = rows.Count + 1, cur = Cursor();
+    if (cur < scroll) scroll = cur;
+    if (cur >= scroll + maxRows) scroll = cur - maxRows + 1;
+    scroll = Math.Max(0, Math.Min(scroll, total - maxRows));
+    for (int i = scroll; i < Math.Min(total, scroll + maxRows); i++)
+    {
+        float ry = rowsTop + (i - scroll) * rowH, ty = ry + 2 * k;
+        if (i == cur) Box(ref f, x0 + 2 * k, ry, W - 4 * k, rowH - 2 * k, C_SEL);
+        if (i == 0) { Txt(ref f, "ALL DRONES", cx[0], ty, ts, C_ACC); continue; }
+        var r = rows[i - 1];
+        Color sc = StateColor(r);
+        Txt(ref f, r.Call, cx[0], ty, ts, C_TXT);
+        Txt(ref f, StateText(r), cx[1], ty, ts, sc);
+        Bar(ref f, cx[2], ry + 8 * k, 0.17f * W, 9 * k, r.Batt, LevelColor(r.Batt));
+        Bar(ref f, cx[3], ry + 8 * k, 0.13f * W, 9 * k, r.Integ, LevelColor(r.Integ));
+    }
+
+    // one selector instead of two rows of buttons: < ACTION >  target
+    float ay = y0 + H - footer + 4 * k;
+    Box(ref f, x0 + 4 * k, ay, W - 8 * k, 30 * k, C_ACC);
+    string tgt = action < TargetedActions ? "  " + (selCall.Length > 0 ? selCall : "ALL") : "";
+    Txt(ref f, "<  " + Actions[action] + tgt + "  >", x0 + W / 2, ay + 3 * k, 0.65f * k, C_BG, TextAlignment.CENTER);
+    if (evts.Count > 0) Txt(ref f, evts[evts.Count - 1], x0 + 8 * k, y0 + H - 24 * k, 0.5f * k, C_DIM);
+    f.Dispose();
+}
+
 void DrawFleet(IMyTextSurface s)
 {
     Prepare(s);
+    if (cpt) { DrawFleetCompact(s); return; }
     Vector2 sz = s.SurfaceSize;
     Vector2 o = (s.TextureSize - sz) / 2f;
     float W = sz.X, H = sz.Y, k = Math.Min(W, H) / 512f;
@@ -450,7 +509,7 @@ void DrawMap(IMyTextSurface s)
     Prepare(s);
     Vector2 sz = s.SurfaceSize;
     Vector2 o = (s.TextureSize - sz) / 2f;
-    float W = sz.X, H = sz.Y, k = Math.Min(W, H) / 512f;
+    float W = sz.X, H = sz.Y, k = Scale(W, H, 380, 260);
     float x0 = o.X, y0 = o.Y;
     bool linked = Linked();
     Color ac = linked ? AlertColor(hAlert) : C_DIM;
@@ -519,7 +578,7 @@ void DrawHangar(IMyTextSurface s)
     Prepare(s);
     Vector2 sz = s.SurfaceSize;
     Vector2 o = (s.TextureSize - sz) / 2f;
-    float W = sz.X, H = sz.Y, k = Math.Min(W, H) / 512f;
+    float W = sz.X, H = sz.Y, k = Scale(W, H, 380, 300);
     float x0 = o.X, y0 = o.Y;
     bool linked = Linked();
 
@@ -570,7 +629,9 @@ void DrawHangar(IMyTextSurface s)
         if (y + rowH > bottom) { Txt(ref f, "+" + (dockRows.Count - shown) + " more", x0 + 10 * k, y, 0.4f * k, C_DIM); break; }
         Color c = d.State == 2 ? C_DOCK : d.State == 1 ? C_WARN : C_DIM;
         Box(ref f, x0 + 8 * k, y + 4 * k, 4 * k, rowH - 10 * k, c);
-        string label = d.Name.Length > 22 ? d.Name.Substring(0, 22) : d.Name;
+        string label = cpt ? d.Name.Replace("Connector", "").Trim() : d.Name;   // "[Dock] L1" on a cockpit screen
+        int lmax = cpt ? 12 : 22;
+        if (label.Length > lmax) label = label.Substring(0, lmax);
         Txt(ref f, label, x0 + 18 * k, y + 2 * k, 0.44f * k, C_TXT);
         Txt(ref f, d.State == 2 ? (d.Call.Length > 0 ? d.Call : "occupied") : d.State == 1 ? d.Call + " inbound" : "free", x0 + W * 0.40f, y + 2 * k, 0.44f * k, c);
         if (d.State == 2 && d.Call.Length > 0)

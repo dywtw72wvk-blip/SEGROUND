@@ -75,7 +75,9 @@ B = {
     "l_battery":   ("BatteryBlock", "LargeBlockBatteryBlock", "Large", (1, 1, 1), 3845.0, 0, False),
     "l_reactor":   ("Reactor", "LargeBlockSmallGenerator", "Large", (1, 1, 1), 4793.0, 0, False),
     "l_pb":        ("MyProgrammableBlock", "LargeProgrammableBlock", "Large", (1, 1, 1), 534.4, 0, False),
-    "l_cockpit":   ("Cockpit", "LargeBlockCockpitSeat", "Large", (1, 1, 1), 1768.0, 0, False),
+    # Industrial Cockpit (Decorative Pack DLC): screens stay in view at normal FOV.
+    # Surfaces: 0 Large, 1 TopLeft, 2 TopCenter, 3 TopRight, 4 Center.
+    "l_cockpit":   ("Cockpit", "LargeBlockCockpitIndustrial", "Large", (1, 1, 1), 1768.0, 0, False),
     "l_connector": ("ShipConnector", "Connector", "Large", (1, 1, 1), 3564.0, 0, False),
     "l_antenna":   ("RadioAntenna", "LargeBlockRadioAntenna", "Large", (1, 6, 2), 3401.6, 0, False),
     "l_gatling":   ("LargeGatlingTurret", "", "Large", (3, 3, 3), 1428.0, 0, False),
@@ -228,7 +230,7 @@ def blueprint_xml(name, grids):
     <ShipBlueprint xsi:type="MyObjectBuilder_ShipBlueprintDefinition">
       <Id Type="MyObjectBuilder_ShipBlueprintDefinition" Subtype="{escape(name)}" />
       <DisplayName>{escape(name)}</DisplayName>
-      <CubeGrids>
+{"      <DLC>DecorativeBlocks</DLC>" + chr(10) if any("CockpitIndustrial" in g for g in grids) else ""}      <CubeGrids>
 {chr(10).join(grids)}
       </CubeGrids>
       <EnvironmentType>None</EnvironmentType>
