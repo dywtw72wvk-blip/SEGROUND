@@ -1392,14 +1392,17 @@ return h.LengthSquared() > 1e-6 ? Util.Norm(h) : new Vector3D(0, 0, -1);
 static class Proto
 {
 public const int Version = 4;
-public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6;
+public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6,
+M_HAUL = 7, M_VIS = 8, M_VREQ = 9;
 public const int O_NONE = 0, O_REGISTER = 1, O_ESCORT = 2, O_HOLD = 3, O_GOTO = 4,
 O_DOCK = 5, O_UNDOCK = 6, O_STOP = 7,
 O_SEARCH = 8,
 O_ATTACK = 9,
 O_LOITER = 10,
 O_INTERCEPT = 11,
-O_MINE = 12;
+O_MINE = 12,
+O_HAUL = 13;
+public const int V_DOCK = 1, V_WAIT = 2, V_LOADED = 3, V_NONE = 4, R_DOCK = 1, R_LEFT = 2;
 public const int MODE_AUTO = 0, MODE_CARRIER = 1, MODE_BASE = 2;
 public const int S_BOOT = 0, S_UNPROV = 1, S_REGISTERING = 2, S_IDLE = 3, S_HOLD = 4,
 S_ESCORT = 5, S_GOTO = 6, S_APPROACH = 7, S_FINAL = 8, S_DOCKED = 9,
@@ -1419,7 +1422,7 @@ static readonly string[] facs = { "IDLE", "BUILDING", "SECURING", "RELEASING", "
 public static string FactoryName(int s) { return s >= 0 && s < facs.Length ? facs[s] : "?"; }
 static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
 "APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT", "TRANSIT", "BORE", "ASCEND" };
-static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE" };
+static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE", "HAUL" };
 static readonly string[] modes = { "AUTO", "CARRIER", "BASE" };
 static readonly string[] alerts = { "GREEN", "YELLOW", "RED" };
 public static string StateName(int s) { return s >= 0 && s < states.Length ? states[s] : "?"; }
@@ -1585,7 +1588,8 @@ class Net
 {
 public readonly IMyIntergridCommunicationSystem IGC;
 public int NetId, KeyHash;
-public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "";
+public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "",
+THaul = "", TVis = "", TVReq = "";
 public Net(IMyIntergridCommunicationSystem igc) { IGC = igc; }
 public void Configure(int netId, string key)
 {
@@ -1594,6 +1598,7 @@ KeyHash = Util.Hash(key ?? "");
 string p = "FS" + netId + "/";
 TNav = p + "nav"; THello = p + "hello"; TSts = p + "sts"; TOrd = p + "ord";
 TCmd = p + "cmd"; TSnap = p + "snap"; TFac = p + "fac"; TFacSt = p + "facst"; TCon = p + "con"; TDes = p + "des";
+THaul = p + "haul"; TVis = p + "vis"; TVReq = p + "vreq";
 }
 MyTuple<int, int, int, int, long> Hdr(int type, long seq)
 {
@@ -1706,6 +1711,48 @@ var d = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<long, double>, MyTup
 if (!Ok(d.Item1, Proto.M_DES)) return false;
 id = d.Item2.Item1; size = d.Item2.Item2; pos = d.Item3.Item1; vel = d.Item3.Item2;
 if (id == 0) id = -2;
+return true;
+}
+public void SendHaul(Vector3D pos, double m3, double kg, string name)
+{
+IGC.SendBroadcastMessage(THaul, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>(
+Hdr(Proto.M_HAUL, 0), new MyTuple<Vector3D, double, double, string>(pos, m3, kg, name ?? "")));
+}
+public bool ReadHaul(MyIGCMessage m, out Vector3D pos, out double m3, out double kg, out string name)
+{
+pos = Vector3D.Zero; m3 = kg = 0; name = "";
+if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>)) return false;
+var h = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>)m.Data;
+if (!Ok(h.Item1, Proto.M_HAUL)) return false;
+pos = h.Item2.Item1; m3 = h.Item2.Item2; kg = h.Item2.Item3; name = h.Item2.Item4;
+return true;
+}
+public bool SendVisit(long to, int code, Vector3D a, Vector3D b, Vector3D c, long id)
+{
+return IGC.SendUnicastMessage(to, TVis, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>(
+Hdr(Proto.M_VIS, 0), new MyTuple<int, Vector3D, Vector3D, Vector3D, long>(code, a, b, c, id)));
+}
+public bool ReadVisit(MyIGCMessage m, out int code, out Vector3D a, out Vector3D b, out Vector3D c, out long id)
+{
+code = 0; a = b = c = Vector3D.Zero; id = 0;
+if (m.Tag != TVis || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>)) return false;
+var v = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>)m.Data;
+if (!Ok(v.Item1, Proto.M_VIS)) return false;
+code = v.Item2.Item1; a = v.Item2.Item2; b = v.Item2.Item3; c = v.Item2.Item4; id = v.Item2.Item5;
+return true;
+}
+public bool SendVReq(long to, int code, double kg)
+{
+return IGC.SendUnicastMessage(to, TVReq, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>(
+Hdr(Proto.M_VREQ, 0), new MyTuple<int, double>(code, kg)));
+}
+public bool ReadVReq(MyIGCMessage m, out int code, out double kg)
+{
+code = 0; kg = 0;
+if (m.Tag != TVReq || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>)) return false;
+var v = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>)m.Data;
+if (!Ok(v.Item1, Proto.M_VREQ)) return false;
+code = v.Item2.Item1; kg = v.Item2.Item2;
 return true;
 }
 }

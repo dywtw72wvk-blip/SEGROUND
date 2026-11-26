@@ -6,7 +6,8 @@ static class Proto
     public const int Version = 4;   // v4: NAV hull box, SEARCH/ATTACK orders, CONTACT reports (v3: status ammo)
 
     // Message types (header Item4)
-    public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6;
+    public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6,
+                     M_HAUL = 7, M_VIS = 8, M_VREQ = 9;   // pickup request, carrier -> visiting hauler, hauler -> carrier
 
     // Orders / hub directives
     public const int O_NONE = 0, O_REGISTER = 1, O_ESCORT = 2, O_HOLD = 3, O_GOTO = 4,
@@ -15,7 +16,12 @@ static class Proto
                      O_ATTACK = 9,    // dive now: a = target pos, b = target vel, c = aim offset from target centre (world), id = target
                      O_LOITER = 10,   // death ring: a = target pos, b = target vel (world), c = (slot, slots, ring distance), id = target
                      O_INTERCEPT = 11, // chase a launched drone: a = its pos, b = its vel (world), id = its entity
-                     O_MINE = 12;      // bore one shaft: a = axis point at the deposit's depth, b = up * metres past it, c = (shaft, shafts, max depth), id = deposit (world)
+                     O_MINE = 12,      // bore one shaft: a = axis point at the deposit's depth, b = up * metres past it, c = (shaft, shafts, max depth), id = deposit (world)
+                     O_HAUL = 13;      // pick up ore: a = the carrier's position when it asked (world), id = the carrier's IGC address
+
+    // carrier -> visiting hauler (M_VIS): dock at this port (a, b, c = its position, out axis, up in the carrier frame;
+    // id = connector), wait (port busy), loaded (leave), nothing to haul.  hauler -> carrier (M_VREQ): dock please, left
+    public const int V_DOCK = 1, V_WAIT = 2, V_LOADED = 3, V_NONE = 4, R_DOCK = 1, R_LEFT = 2;
 
     // Hub modes (MODE_AUTO is a setting only; the active mode is CARRIER or BASE)
     public const int MODE_AUTO = 0, MODE_CARRIER = 1, MODE_BASE = 2;
@@ -48,7 +54,7 @@ static class Proto
 
     static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
                                         "APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT", "TRANSIT", "BORE", "ASCEND" };
-    static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE" };
+    static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE", "HAUL" };
     static readonly string[] modes = { "AUTO", "CARRIER", "BASE" };
     static readonly string[] alerts = { "GREEN", "YELLOW", "RED" };
 

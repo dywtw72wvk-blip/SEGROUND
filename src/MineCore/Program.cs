@@ -16,17 +16,25 @@
 //             effective thrust in the current air, the current gravity, the
 //             carrier's mass with docked miners, plus every miner still out
 //             coming back full)
+//   pickup    while the hold is filling (HaulAt) or the carrier is full, asks
+//             the base's Depot for a hauler (HAUL broadcast); a hauler that
+//             comes gets the [Haul] port and is loaded from the hold up to the
+//             mass it says it can still lift, then told to leave
 //   pages     text status on cockpit screens / LCDs tagged [FS:Mine], [FS:Map]
 //             (deposits), [FS:Miners], [FS:Cargo] (add :n for a surface index)
+//   menu      arrow-key command menu on [FS:Command]: menu up / down / left /
+//             right / apply (the carrier's hotbar has them on slots 1-5)
 //
 // Commands (toolbar / button panel):
 //   mine <ore[,ore...]|any>   send the miners after those ores (Iron, Nickel, ...)
 //   mine GPS:name:x:y:z:      add a deposit by hand and mine it
 //   mine off                  send no more trips (miners out finish their load)
 //   recall [miner|all]        everyone home now
+//   haul [off]                ask for a pickup now (off: stop asking)
 //   survey                    read the ore detectors now and log what is there
 //   deposits clear            forget all deposits
 //   mintwr <x>                lift guard (default 1.4)
+//   menu <up|down|left|right|apply>
 //   provision   forget <callsign>   reload
 //
 // Miner contract (Proto.O_MINE): a = shaft axis point at the deposit's depth,
@@ -38,29 +46,19 @@
 // ============================================================================
 const string SEC = "Mine";
 
-Net net;
-Cfg cfg;
-readonly Perf perf = new Perf();
-IMyBroadcastListener helloL, cmdL;
-IMyUnicastListener uni;
-IMyShipController refCtl;
-IMyTerminalBlock refBlk;
-
-readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
-readonly List<IMyShipConnector> dockConns = new List<IMyShipConnector>();
 readonly List<IMyThrust> thr = new List<IMyThrust>();
 readonly List<IMyCargoContainer> holds = new List<IMyCargoContainer>();
+readonly List<IMyTerminalBlock> holdB = new List<IMyTerminalBlock>();   // the hold, for ore moves
+readonly List<IMyShipConnector> haulConns = new List<IMyShipConnector>();
 readonly List<IMyOreDetector> dets = new List<IMyOreDetector>();
-readonly List<IMyProgrammableBlock> pbs = new List<IMyProgrammableBlock>();
-readonly List<MyInventoryItem> items = new List<MyInventoryItem>();
-readonly Dictionary<long, Drone> reg = new Dictionary<long, Drone>();
-readonly List<Drone> sorted = new List<Drone>();
-readonly Docks docks = new Docks();
-readonly List<string> evText = new List<string>();
-readonly List<double> evT = new List<double>();
-readonly StringBuilder sb = new StringBuilder();
 readonly List<IMyTextSurface>[] pages = { new List<IMyTextSurface>(), new List<IMyTextSurface>(), new List<IMyTextSurface>(), new List<IMyTextSurface>() };
 readonly string[] pageTags = { "FS:Mine", "FS:Map", "FS:Miners", "FS:Cargo" };
+readonly List<IMyTextSurface> menuSurf = new List<IMyTextSurface>();
+readonly List<string> oreOpts = new List<string>();
+int menuItem, menuOpt;
+string menuMsg = "";
+double menuMsgT = -1e9;
+bool flip;
 
 // deposits
 class Dep { public int Id, Next, Miss; public string Ore = ""; public Vector3D P, Up; public double Vol, Seen; public bool Gone, Manual; }
@@ -68,33 +66,31 @@ readonly List<Dep> deps = new List<Dep>();
 readonly List<Vector3D> grid = new List<Vector3D>();   // shaft grid offsets (cells), centre first
 readonly Dictionary<string, double> oreAmt = new Dictionary<string, double>();
 readonly Dictionary<string, int> found = new Dictionary<string, int>();   // new deposits this survey, by ore
-// a docked miner's inventories (cargo, drills, connectors), per pad, refreshed when the miner changes
-class PadInv { public long Grid; public double T; public readonly List<IMyTerminalBlock> L = new List<IMyTerminalBlock>(); }
-readonly Dictionary<long, PadInv> padInv = new Dictionary<long, PadInv>();
 
 // --- config
-int netId, shaftN;
-string key = "", dockTag = "", ctlTag = "", perfMode = "NORMAL", ores = "ANY", srcName = "none";
-double lostAfter, minTwr, minerDry, minerLoad, minerM3, launchBatt, launchInterval, shaftSpacing, digBelow, maxDepth, detRange, mergeDist, rtbBatt;
-bool autoProv, mining, bootLocked, fullLogged;
+int shaftN;
+string ores = "ANY", srcName = "none";
+double minTwr, minerDry, minerLoad, minerM3, launchBatt, launchInterval, shaftSpacing, digBelow, maxDepth, detRange, mergeDist, haulAt;
+bool mining, fullLogged, wasBoot;
 
 // --- persistent
-int epoch, callCtr, depCtr;
-long ctr;
+int depCtr;
 
 // --- runtime
-double T, nextNav, nextTask, nextScan, nextProv, nextEcho, nextSurvey, nextUnload, nextLaunch, nextPage, nextOre;
-bool havePos, moving;
-Vector3D lastPos, vel, angVel;
-MatrixD M = MatrixD.Identity;
-string echo = "", warn = "", guardWhy = "";
+double nextSurvey, nextUnload, nextLaunch, nextPage, nextOre, nextHaul, nextVis;
+string guardWhy = "";
 double liftKg, massKg, holdFree, holdMax, twrNow;
-int out_, docked_, unloading;
+int unloading;
+// pickup: the hauler visiting (its address), the port it got, what it can lift, what it has been given
+long visitor, visitPort;
+double visitT, visitKg, loadedKg, loadProgT, oreKg;
+bool wantHaul, forceHaul, loadedSent;
 
 public Program()
 {
     net = new Net(IGC);
     uni = IGC.UnicastListener;
+    HubRole = "MINER";
     LoadConfig();
     Load();
     Scan();
@@ -106,15 +102,8 @@ public Program()
 public void Save()
 {
     var ini = new MyIni();
-    ini.Set("hub", "epoch", epoch); ini.Set("hub", "ctr", ctr); ini.Set("hub", "calls", callCtr); ini.Set("hub", "deps", depCtr);
-    ini.Set("hub", "mining", mining); ini.Set("hub", "ores", ores);
-    foreach (var d in reg.Values)
-    {
-        string s = "d" + d.Addr;
-        ini.Set(s, "call", d.Call); ini.Set(s, "role", d.Role); ini.Set(s, "grid", d.Grid);
-        ini.Set(s, "dir", d.Dir); ini.Set(s, "id", d.Id); ini.Set(s, "conn", d.Conn); ini.Set(s, "dep", d.Dep); ini.Set(s, "shaft", d.Shaft);
-        SetV(ini, s, "a", d.A); SetV(ini, s, "b", d.B); SetV(ini, s, "c", d.C);
-    }
+    SaveReg(ini);
+    ini.Set("hub", "deps", depCtr); ini.Set("hub", "mining", mining); ini.Set("hub", "ores", ores);
     foreach (var p in deps)
     {
         string s = "o" + p.Id;
@@ -136,17 +125,8 @@ void Load()
         foreach (var s in secs)
         {
             long addr;
-            if (s.Length > 1 && s[0] == 'd' && long.TryParse(s.Substring(1), out addr))
-            {
-                var d = new Drone { Addr = addr, Restored = true };
-                d.Call = ini.Get(s, "call").ToString(""); d.Role = ini.Get(s, "role").ToString(""); d.Grid = ini.Get(s, "grid").ToString("");
-                d.Dir = ini.Get(s, "dir").ToInt32(); d.Id = ini.Get(s, "id").ToInt64(); d.Conn = ini.Get(s, "conn").ToInt64();
-                d.Dep = ini.Get(s, "dep").ToInt32(-1); d.Shaft = ini.Get(s, "shaft").ToInt32(-1);
-                d.A = GetV(ini, s, "a"); d.B = GetV(ini, s, "b"); d.C = GetV(ini, s, "c");
-                if (d.Conn != 0) docks.Res[d.Conn] = d.Addr;
-                reg[addr] = d;
-            }
-            else if (s.Length > 1 && s[0] == 'o' && long.TryParse(s.Substring(1), out addr))
+            if (LoadReg(ini, s)) continue;
+            if (s.Length > 1 && s[0] == 'o' && long.TryParse(s.Substring(1), out addr))
             {
                 var p = new Dep { Id = (int)addr, Seen = -1e9 };
                 p.Ore = ini.Get(s, "ore").ToString(""); p.Vol = ini.Get(s, "vol").ToDouble(); p.Next = ini.Get(s, "next").ToInt32();
@@ -159,19 +139,11 @@ void Load()
     if (epoch <= 0) epoch = new Random().Next(1, int.MaxValue);
 }
 
-static void SetV(MyIni ini, string s, string k, Vector3D v) { ini.Set(s, k + "x", v.X); ini.Set(s, k + "y", v.Y); ini.Set(s, k + "z", v.Z); }
-static Vector3D GetV(MyIni ini, string s, string k) { return new Vector3D(ini.Get(s, k + "x").ToDouble(), ini.Get(s, k + "y").ToDouble(), ini.Get(s, k + "z").ToDouble()); }
 
 void LoadConfig()
 {
-    cfg = new Cfg(Me, SEC);
-    netId = cfg.I("NetId", 2);                       // the Fleet hub defaults to 1: separate networks
-    key = cfg.S("Key", "change-me");
-    dockTag = cfg.S("DockTag", "[Dock]");
-    ctlTag = cfg.S("ControllerTag", "");
-    lostAfter = cfg.D("LostAfter", 10);
-    autoProv = cfg.B("AutoProvision", true);
-    rtbBatt = cfg.D("RtbBattery", 0.25);
+    HubConfig(SEC, 2);                               // the Fleet hub defaults to net 1: separate networks
+    haulAt = cfg.D("HaulAt", 0.6);                   // ask the base for a pickup once the hold is this full
     launchBatt = cfg.D("LaunchBattery", 0.7);        // a docked miner leaves for its next trip above this charge
     launchInterval = Math.Max(1, cfg.D("LaunchInterval", 3));
     minTwr = Math.Max(1.05, cfg.D("MinTWR", 1.4));   // lift guard: carrier lift / weight never below this
@@ -184,14 +156,8 @@ void LoadConfig()
     maxDepth = cfg.D("MaxDepth", 60);                // m below the surface, hard cap per shaft
     detRange = cfg.D("DetectorRange", 150);          // m, the ore detector's range (vanilla large: 150)
     mergeDist = cfg.D("MergeDistance", 16);          // m: deposit reports of one ore this close are one deposit
-    perfMode = cfg.S("Perf", "Normal").ToUpper();
     cfg.Save();
-
-    net.Configure(netId, key);
-    if (helloL != null) IGC.DisableBroadcastListener(helloL);
-    if (cmdL != null) IGC.DisableBroadcastListener(cmdL);
-    helloL = IGC.RegisterBroadcastListener(net.THello);
-    cmdL = IGC.RegisterBroadcastListener(net.TCmd);
+    HubListen();
 
     // shaft grid: cells of an N x N square, nearest the centre first
     grid.Clear();
@@ -204,16 +170,17 @@ void Scan()
 {
     tmp.Clear();
     GridTerminalSystem.GetBlocksOfType(tmp, b => b.IsSameConstructAs(Me));
-    dockConns.Clear(); thr.Clear(); holds.Clear(); dets.Clear();
+    dockConns.Clear(); thr.Clear(); holds.Clear(); holdB.Clear(); haulConns.Clear(); dets.Clear();
     foreach (var l in pages) l.Clear();
+    menuSurf.Clear();
     refCtl = null;
     IMyShipController any = null, main = null;
     bool antennaOk = false;
     foreach (var b in tmp)
     {
-        var c = b as IMyShipConnector; if (c != null) { if (b.CustomName.Contains(dockTag)) dockConns.Add(c); continue; }
+        var c = b as IMyShipConnector; if (c != null) { if (b.CustomName.Contains(dockTag)) dockConns.Add(c); else if (b.CustomName.Contains("[Haul]")) haulConns.Add(c); continue; }
         var t = b as IMyThrust; if (t != null) { thr.Add(t); continue; }
-        var h = b as IMyCargoContainer; if (h != null) { holds.Add(h); continue; }
+        var h = b as IMyCargoContainer; if (h != null) { holds.Add(h); holdB.Add(h); continue; }
         var o = b as IMyOreDetector; if (o != null) { dets.Add(o); continue; }
         var s = b as IMyShipController;
         if (s != null)
@@ -224,10 +191,15 @@ void Scan()
         }
         var a = b as IMyRadioAntenna; if (a != null && a.IsWorking && a.EnableBroadcasting) antennaOk = true;
         var p = b as IMyTextSurfaceProvider;
+        if (p != null && HasTag(b.CustomName, "FS:Command"))
+        {
+            int idx = TagIndex(b.CustomName, "FS:Command");
+            if (idx < p.SurfaceCount) menuSurf.Add(p.GetSurface(idx));
+        }
         if (p != null && b.CustomName.Contains("[FS:"))
             for (int i = 0; i < pageTags.Length; i++)
             {
-                if (!b.CustomName.Contains("[" + pageTags[i])) continue;
+                if (!HasTag(b.CustomName, pageTags[i])) continue;
                 int idx = TagIndex(b.CustomName, pageTags[i]);
                 if (idx < p.SurfaceCount) { var sf = p.GetSurface(idx); sf.ContentType = ContentType.TEXT_AND_IMAGE; sf.Font = "Monospace"; pages[i].Add(sf); }
             }
@@ -247,18 +219,7 @@ void Scan()
     warn = w.ToString();
 }
 
-static int TagIndex(string name, string tag)
-{
-    int i = name.IndexOf("[" + tag);
-    int j = i + tag.Length + 1;
-    if (i >= 0 && j < name.Length && name[j] == ':')
-    {
-        int e = name.IndexOf(']', j);
-        int v;
-        if (e > j + 1 && int.TryParse(name.Substring(j + 1, e - j - 1), out v)) return v;
-    }
-    return 0;
-}
+
 
 public void Main(string arg, UpdateType src)
 {
@@ -279,6 +240,7 @@ void Tick(double dt)
     if (T >= nextTask) { Tasking(); nextTask = T + 0.5; }
     if (T >= nextSurvey) { Survey(false); nextSurvey = T + 4; }
     if (T >= nextUnload) { Unload(); nextUnload = T + 0.5; }
+    if (T >= nextHaul) { Haul(); nextHaul = T + 1; }
     if (autoProv && T >= nextProv) { Provision(false); nextProv = T + 10; }
     if (T >= nextPage) { Pages(); nextPage = T + 1; }
     if (T >= nextEcho) { BuildEcho(); nextEcho = T + 1; }
@@ -286,170 +248,29 @@ void Tick(double dt)
     if (Runtime.UpdateFrequency != f) Runtime.UpdateFrequency = f;
 }
 
-// ---------------------------------------------------------------- frame
-void UpdateFrame(double dt)
-{
-    M = refBlk.WorldMatrix;
-    if (refCtl != null) { var v = refCtl.GetShipVelocities(); vel = v.LinearVelocity; angVel = v.AngularVelocity; }
-    else
-    {
-        Vector3D p = M.Translation;
-        if (havePos && dt > 0) vel = (p - lastPos) / dt;
-        lastPos = p; havePos = true; angVel = Vector3D.Zero;
-    }
-    moving = vel.LengthSquared() > 0.25 || angVel.LengthSquared() > 1e-4;
-}
 
-void SendNav()
-{
-    var g = Me.CubeGrid;
-    double gs = g.GridSize;
-    Vector3D half = new Vector3D(gs / 2), lo = new Vector3D(g.Min) * gs - half, hi = new Vector3D(g.Max) * gs + half;
-    Vector3D bmin = new Vector3D(double.MaxValue), bmax = new Vector3D(double.MinValue);
-    for (int i = 0; i < 8; i++)
-    {
-        var c = new Vector3D((i & 1) != 0 ? hi.X : lo.X, (i & 2) != 0 ? hi.Y : lo.Y, (i & 4) != 0 ? hi.Z : lo.Z);
-        var l = HubFrame.ToLocal(M, Vector3D.Transform(c, g.WorldMatrix));
-        bmin = Vector3D.Min(bmin, l); bmax = Vector3D.Max(bmax, l);
-    }
-    net.SendNav(M.Translation, vel, M.Forward, M.Up, angVel, g.WorldVolume.Center, g.WorldVolume.Radius, Proto.MODE_CARRIER, Proto.ALERT_GREEN, 0, 0,
-                (bmin + bmax) / 2, (bmax - bmin) / 2);
-}
 
-Vector3D UpVec()
-{
-    Vector3D g = refCtl != null ? refCtl.GetNaturalGravity() : Vector3D.Zero;
-    return g.LengthSquared() > 0.01 ? -Util.Norm(g) : M.Up;
-}
 
-// ---------------------------------------------------------------- messages & registry
-void Receive()
-{
-    while (helloL.HasPendingMessage)
-    {
-        var m = helloL.AcceptMessage();
-        string role, gname; long caps; double acc, spd;
-        if (!net.ReadHello(m, out role, out caps, out acc, out spd, out gname)) continue;
-        var d = GetOrAdd(m.Source, role);
-        d.Caps = caps; d.MaxAccel = acc; d.MaxSpeed = spd; d.Grid = gname;
-        Register(d);
-    }
-    while (uni.HasPendingMessage)
-    {
-        var m = uni.AcceptMessage();
-        MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>> s;
-        if (!net.ReadStatus(m, out s)) continue;
-        Drone d;
-        if (!reg.TryGetValue(m.Source, out d)) { d = GetOrAdd(m.Source, s.Item2.Item1); Register(d); }
-        bool wasDocked = d.Docked;
-        d.Role = s.Item2.Item1; d.State = s.Item2.Item2; d.Task = s.Item2.Item3; d.Ack = s.Item2.Item4; d.DockId = s.Item2.Item5;
-        d.Pos = s.Item3.Item1; d.Vel = s.Item3.Item2;
-        d.Batt = s.Item4.Item1; d.H2 = s.Item4.Item2; d.Cargo = s.Item4.Item3; d.Integ = s.Item4.Item4; d.Ammo = s.Item4.Item5; d.Flags = s.Item4.Item6;
-        d.Seen = T;
-        if (d.LostFlag)
-        {
-            d.LostFlag = false;
-            if (d.Restored) { d.Restored = false; Log(d.Call + " reconnected"); Reissue(d); }
-            else Log(d.Call + " link restored");
-        }
-        if (!wasDocked && d.Docked) { Log(d.Call + " docked"); nextProv = T + 1; d.DockedSince = T; }
-        if (wasDocked && !d.Docked) Log(d.Call + " undocked");
-        if (d.Acked) { d.Tries = 0; d.Unresp = false; }
-    }
-    while (cmdL.HasPendingMessage)
-    {
-        var c = cmdL.AcceptMessage().Data as string;
-        if (c != null) Command(c);
-    }
-}
 
-Drone GetOrAdd(long addr, string role)
-{
-    Drone d;
-    if (reg.TryGetValue(addr, out d)) return d;
-    callCtr++;
-    string r = (role ?? "MINER").ToUpper();
-    if (r.Length > 6) r = r.Substring(0, 6);
-    d = new Drone { Addr = addr, Role = role, Call = r + "-" + callCtr.ToString("00"), Seen = T, LostFlag = false };
-    reg[addr] = d;
-    Log("New drone " + d.Call);
-    return d;
-}
 
-long NextSeq() { ctr++; return ((long)epoch << 32) | (ctr & 0xFFFFFFFFL); }
 
-void Register(Drone d)
-{
-    net.SendOrder(d.Addr, NextSeq(), Proto.O_REGISTER, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0, d.Call);
-    Reissue(d);
-}
 
-void Issue(Drone d, int dir, Vector3D a, Vector3D b, Vector3D c, long id)
-{
-    d.Dir = dir; d.A = a; d.B = b; d.C = c; d.Id = id;
-    d.Seq = NextSeq(); d.Tries = 0;
-    SendOrd(d);
-}
 
-void Reissue(Drone d)
-{
-    if (d.Dir == Proto.O_NONE) return;
-    if (d.Dir == Proto.O_DOCK && d.Conn == 0) { nextTask = T; return; }
-    d.Seq = NextSeq(); d.Tries = 0;
-    SendOrd(d);
-}
 
-void SendOrd(Drone d) { net.SendOrder(d.Addr, d.Seq, d.Dir, d.A, d.B, d.C, d.Id, ""); d.Sent = T; d.Tries++; }
 
-void OrderDock(Drone d)
-{
-    ClearJob(d);
-    d.Dir = Proto.O_DOCK; d.Seq = 0;
-    var c = docks.Reserve(d);
-    if (c != null) SendDock(d, c);
-    else Log(d.Call + " waiting for a free pad");
-}
-
-void SendDock(Drone d, IMyShipConnector c)
-{
-    MatrixD cm = c.WorldMatrix;
-    Issue(d, Proto.O_DOCK, HubFrame.ToLocal(M, cm.Translation), HubFrame.DirToLocal(M, cm.Forward), HubFrame.DirToLocal(M, cm.Up), c.EntityId);
-}
 
 bool IsMiner(Drone d) { return (d.Role ?? "").ToUpper() == "MINER"; }
 
 // ---------------------------------------------------------------- tasking (2 Hz)
 void Tasking()
 {
-    sorted.Clear();
-    foreach (var d in reg.Values) sorted.Add(d);
-    sorted.Sort((x, y) => string.Compare(x.Call, y.Call, StringComparison.Ordinal));
-    if (!bootLocked && T >= 2)
-    {
-        // pre-docked blueprints: lock every pad with a miner sitting on it, once
-        foreach (var c in docks.List) if (!c.Closed && c.Status == MyShipConnectorStatus.Connectable) c.Connect();
-        bootLocked = true; nextLaunch = T + 5;
-    }
-    out_ = docked_ = 0;
-    foreach (var d in sorted)
-    {
-        if (!d.LostFlag && T - d.Seen > lostAfter) { d.LostFlag = true; Log(d.Call + " LOST"); }
-        if (d.LostFlag) { if (d.Conn != 0 && T - d.Seen > 60) docks.Release(d); continue; }
-        if (!d.Acked && T - d.Sent > Math.Min(8, 0.75 * (1 << Math.Min(d.Tries, 4))))
-        {
-            SendOrd(d);
-            if (d.Tries > 6 && !d.Unresp) { d.Unresp = true; Log(d.Call + " not acknowledging orders"); }
-        }
-        if (d.Docked && d.DockId != 0 && docks.Get(d.DockId) != null) docks.Claim(d, d.DockId);
-        else if (d.Dir != Proto.O_DOCK && d.Conn != 0 && !d.Docked) docks.Release(d);
-        if (d.Docked) docked_++; else out_++;
-        if (d.Dir != Proto.O_DOCK && !d.Docked && docks.List.Count > 0 && ((d.Batt >= 0 && d.Batt < rtbBatt) || (d.Flags & Proto.F_WANT_RTB) != 0))
-        { Log(d.Call + " returning (battery " + Util.Pct(d.Batt) + ")"); OrderDock(d); }
-        if (d.Dir == Proto.O_DOCK && (d.Conn == 0 || docks.Get(d.Conn) == null)) { var c = docks.Reserve(d); if (c != null) SendDock(d, c); }
-    }
+    TaskRegistry();
+    if (bootLocked && !wasBoot) { wasBoot = true; nextLaunch = T + 5; }   // let pre-docked miners report in first
     Guard();
     Dispatch();
 }
+
+void OnDock(Drone d) { ClearJob(d); }
 
 // ---------------------------------------------------------------- lift & hold guard
 // liftKg: what the thrusters pointing up can hold at MinTWR right now (effective thrust in this air)
@@ -636,42 +457,60 @@ void ClearJob(Drone d) { d.Dep = -1; d.Shaft = -1; }
 // ore from a docked miner's cargo, drills and connectors into the carrier's hold, a few stacks per run
 void Unload()
 {
-    int budget = 6;
     unloading = 0;
     foreach (var pad in docks.List)
     {
-        if (budget <= 0) break;
         if (pad.Closed || pad.Status != MyShipConnectorStatus.Connected || pad.OtherConnector == null) continue;
-        var g = pad.OtherConnector.CubeGrid;
-        PadInv pi;
-        if (!padInv.TryGetValue(pad.EntityId, out pi)) padInv[pad.EntityId] = pi = new PadInv();
-        if (pi.Grid != g.EntityId || T - pi.T > 15)
-        {
-            pi.Grid = g.EntityId; pi.T = T; pi.L.Clear();
-            GridTerminalSystem.GetBlocksOfType(pi.L, b => b.CubeGrid == g && b.HasInventory && (b is IMyCargoContainer || b is IMyShipDrill || b is IMyShipConnector));
-        }
-        bool any = false;
-        foreach (var b in pi.L)
-            for (int k = 0; k < b.InventoryCount && budget > 0; k++)
-            {
-                var src = b.GetInventory(k);
-                items.Clear();
-                src.GetItems(items, it => it.Type.TypeId == "MyObjectBuilder_Ore");
-                foreach (var it in items)
-                {
-                    if (budget <= 0) break;
-                    any = true;
-                    foreach (var h in holds)
-                    {
-                        var dst = h.GetInventory(0);
-                        if (h.Closed || (float)dst.MaxVolume - (float)dst.CurrentVolume < 0.05f) continue;
-                        budget--;
-                        if (src.TransferItemTo(dst, it)) break;
-                    }
-                }
-            }
-        if (any) unloading++;
+        bool left;
+        MoveOre(Docked(pad, true), holdB, 6, 1e12, out left);
+        if (left) unloading++;
     }
+}
+
+// ---------------------------------------------------------------- pickup (1 Hz)
+// Ask the base for a hauler while the hold is filling or the carrier is full (until it is nearly
+// empty again); load the ship on a [Haul] port from the hold, up to what it says it can lift.
+void Haul()
+{
+    double fill = holdMax > 0 ? 1 - holdFree / holdMax : 0;
+    oreKg = 0; foreach (var kv in oreAmt) oreKg += kv.Value;
+    if (forceHaul || fill >= haulAt || (mining && guardWhy.Length > 0)) wantHaul = true;
+    else if (fill < 0.05) wantHaul = false;
+    if (wantHaul && visitor == 0 && oreKg > 1000) net.SendHaul(M.Translation, holdMax - holdFree, oreKg, Me.CubeGrid.CustomName);
+    if (visitor != 0 && T - visitT > 900) { Log("Hauler visit timed out"); visitor = 0; visitKg = 0; }   // nobody visiting: nothing is loaded
+    foreach (var p in haulConns)
+    {
+        if (p.Closed || p.Status != MyShipConnectorStatus.Connected || p.OtherConnector == null) continue;
+        bool left;
+        double kg = MoveOre(holdB, Docked(p, false), 8, Math.Max(0, visitKg - loadedKg), out left);
+        if (kg > 0) { loadedKg += kg; loadProgT = T; }
+        // done: it has what it can lift, the hold is empty, or nothing has moved for 15 s (its cargo is full)
+        bool done = visitKg - loadedKg < 500 || !left || T - loadProgT > 15;
+        if (visitor != 0 && done && T >= nextVis)
+        {
+            net.SendVisit(visitor, Proto.V_LOADED, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0);
+            nextVis = T + 3;
+            if (!loadedSent) { loadedSent = true; Log("Hauler loaded: " + (int)(loadedKg / 1000) + " t"); }
+        }
+    }
+}
+
+// a hauler asking for a port, or saying it has left
+void OnUnicast(MyIGCMessage m)
+{
+    int code; double kg;
+    if (!net.ReadVReq(m, out code, out kg)) return;
+    if (code == Proto.R_LEFT) { if (m.Source == visitor) { Log("Hauler away with " + (int)(loadedKg / 1000) + " t"); visitor = 0; visitKg = 0; forceHaul = false; } return; }
+    if (code != Proto.R_DOCK) return;
+    if (visitor != 0 && visitor != m.Source && T - visitT < 900) { net.SendVisit(m.Source, Proto.V_WAIT, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0); return; }
+    if (oreKg < 1000 && visitor != m.Source) { net.SendVisit(m.Source, Proto.V_NONE, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0); return; }
+    IMyShipConnector port = null;
+    foreach (var c in haulConns) if (!c.Closed && c.IsFunctional && (c.Status != MyShipConnectorStatus.Connected || c.EntityId == visitPort)) { port = c; break; }
+    if (port == null) { net.SendVisit(m.Source, Proto.V_WAIT, Vector3D.Zero, Vector3D.Zero, Vector3D.Zero, 0); return; }
+    if (visitor != m.Source) { visitor = m.Source; loadedKg = 0; loadedSent = false; Log("Hauler inbound, can lift " + (int)(kg / 1000) + " t"); }
+    visitKg = kg; visitT = T; visitPort = port.EntityId; loadProgT = T;
+    MatrixD cm = port.WorldMatrix;
+    net.SendVisit(m.Source, Proto.V_DOCK, HubFrame.ToLocal(M, cm.Translation), HubFrame.DirToLocal(M, cm.Forward), HubFrame.DirToLocal(M, cm.Up), port.EntityId);
 }
 
 // ---------------------------------------------------------------- commands
@@ -709,6 +548,10 @@ void Command(string raw)
             }
             break;
         case "survey": Survey(true); ListDeposits(); break;
+        case "haul":
+            forceHaul = a1.ToLower() != "off"; if (!forceHaul) wantHaul = false;
+            Log(forceHaul ? "Pickup requested" : "Pickup requests off");
+            break;
         case "deposits":
             if (a1.ToLower() == "clear") { deps.Clear(); foreach (var d in reg.Values) if (d.Dir != Proto.O_MINE) ClearJob(d); Log("Deposits cleared"); }
             else ListDeposits();
@@ -720,6 +563,7 @@ void Command(string raw)
                 else Log("mintwr: number >= 1.05");
             }
             break;
+        case "menu": Menu(a1.ToLower()); break;
         case "provision": Provision(true); break;
         case "forget":
             {
@@ -740,44 +584,14 @@ void ListDeposits()
     foreach (var p in deps) if (!p.Gone && n++ < 4) Log(p.Ore + " #" + p.Id + " " + (p.Vol > 0 && !p.Manual ? (int)p.Vol + "m3 " : "") + Util.Dist((p.P - M.Translation).Length()) + " " + Util.Gps(p.Ore + p.Id, p.P));
 }
 
-void ForTargets(string tgt, Action<Drone> act)
-{
-    bool all = tgt.Equals("all", StringComparison.OrdinalIgnoreCase);
-    int n = 0;
-    foreach (var d in reg.Values)
-    {
-        bool hit = all ? !d.LostFlag : d.Call.Equals(tgt, StringComparison.OrdinalIgnoreCase) || d.Grid.Equals(tgt, StringComparison.OrdinalIgnoreCase);
-        if (hit) { act(d); n++; }
-    }
-    if (n == 0) Log(all ? "No miners online" : "No miner matches '" + Util.Clean(tgt) + "'");
-}
 
-// Push NetId/Key into docked drone PBs ([Drone] section) and restart their config
-void Provision(bool verbose)
-{
-    pbs.Clear();
-    GridTerminalSystem.GetBlocksOfType(pbs, b => !b.IsSameConstructAs(Me) && b.CustomData.Contains("[Drone]"));
-    int n = 0;
-    foreach (var pb in pbs)
-    {
-        var ini = new MyIni();
-        if (!ini.TryParse(pb.CustomData)) continue;
-        if (ini.Get("Drone", "NetId").ToInt32(0) == netId && ini.Get("Drone", "Key").ToString("") == key) continue;
-        ini.Set("Drone", "NetId", netId);
-        ini.Set("Drone", "Key", key);
-        pb.CustomData = ini.ToString();
-        pb.TryRun("provision");
-        n++;
-        Log("Provisioned " + Util.Clean(pb.CubeGrid.CustomName));
-    }
-    if (verbose && n == 0) Log("Provision: nothing to update (" + pbs.Count + " drone PBs connected)");
-}
 
 // ---------------------------------------------------------------- pages & echo
-void Log(string s)
+
+string PickupText()
 {
-    evText.Add(Util.Clean(s)); evT.Add(T);
-    if (evText.Count > 8) { evText.RemoveAt(0); evT.RemoveAt(0); }
+    if (visitor != 0) return "Pickup: hauler " + (loadedSent ? "loaded " : "here ") + (int)(loadedKg / 1000) + "/" + (int)(visitKg / 1000) + " t";
+    return wantHaul ? "Pickup: requested" : "Pickup: -";
 }
 
 string Job() { return mining ? (guardWhy.Length > 0 ? "FULL: " + guardWhy : "MINING " + ores) : "IDLE"; }
@@ -802,6 +616,7 @@ void CountOre()
 void Pages()
 {
     if (T >= nextOre) { CountOre(); nextOre = T + 5; }
+    DrawMenu();
     for (int i = 0; i < pages.Length; i++)
     {
         if (pages[i].Count == 0) continue;
@@ -836,6 +651,7 @@ void Pages()
             sb.Append("Lift ").Append(Util.Num(twrNow)).Append(" g  guard ").Append(Util.Num(minTwr)).Append('\n');
             sb.Append("Mass ").Append((int)(massKg / 1000)).Append(" t  max ").Append((int)(liftKg / 1000)).Append(" t\n");
             sb.Append("Loads left ").Append(LoadsLeft()).Append(unloading > 0 ? "  UNLOADING" : "").Append('\n');
+            sb.Append(PickupText()).Append('\n');
             foreach (var kv in oreAmt) sb.Append(Pad(kv.Key, 10)).Append((int)(kv.Value / 1000)).Append(" t\n");
         }
         string txt = sb.ToString();
@@ -843,7 +659,6 @@ void Pages()
     }
 }
 
-static string Pad(string s, int n) { return s.Length >= n ? s.Substring(0, n - 1) + " " : s + new string(' ', n - s.Length); }
 
 void Overview(StringBuilder e, int evN)
 {
@@ -854,6 +669,7 @@ void Overview(StringBuilder e, int evN)
     e.Append("Deposits ").Append(live).Append(" (").Append(srcName).Append(")\n");
     e.Append("Hold ").Append(Util.Pct((float)(holdMax > 0 ? 1 - holdFree / holdMax : 0))).Append("  lift ").Append(Util.Num(twrNow)).Append(" g\n");
     e.Append("Loads left ").Append(LoadsLeft()).Append(unloading > 0 ? "  UNLOADING" : "").Append('\n');
+    e.Append(PickupText()).Append('\n');
     for (int i = evText.Count - 1; i >= Math.Max(0, evText.Count - evN); i--) e.Append(Util.Age((int)(T - evT[i]))).Append(' ').Append(evText[i]).Append('\n');
 }
 
@@ -861,8 +677,114 @@ void BuildEcho()
 {
     var e = new StringBuilder();
     Overview(e, 0);
-    e.Append("Pads ").Append(docks.Free()).Append('/').Append(docks.List.Count).Append(" free   holds ").Append(holds.Count).Append("   detectors ").Append(dets.Count).Append('\n');
+    e.Append("Pads ").Append(docks.Free()).Append('/').Append(docks.List.Count).Append(" free   holds ").Append(holds.Count).Append("   detectors ").Append(dets.Count).Append("   haul ports ").Append(haulConns.Count).Append('\n');
     e.Append(perf.Text()).Append('\n').Append(warn);
     for (int i = evText.Count - 1; i >= Math.Max(0, evText.Count - 6); i--) e.Append(Util.Age((int)(T - evT[i]))).Append("  ").Append(evText[i]).Append('\n');
     echo = e.ToString();
+}
+
+// ---------------------------------------------------------------- command menu ([FS:Command])
+// up/down = item, left/right = value, apply = run it. Same look as the Fleet carrier's Defense menu.
+static readonly string[] MenuNames = { "MINE", "STOP MINING", "SURVEY", "RECALL ALL", "LIFT GUARD", "CLEAR DEPOSITS" };
+static readonly string[] Ores = { "ANY", "IRON", "NICKEL", "SILICON", "COBALT", "MAGNESIUM", "SILVER", "GOLD", "PLATINUM", "URANIUM", "ICE" };
+static readonly string[] Guards = { "1.2", "1.3", "1.4", "1.5", "1.6", "1.8", "2.0" };
+static readonly Color C_BG = new Color(4, 10, 18), C_PANEL = new Color(14, 30, 46), C_ACC = new Color(0, 170, 255), C_TXT = new Color(220, 235, 245),
+                      C_DIM = new Color(110, 130, 150), C_SEL = new Color(0, 64, 104), C_GOOD = new Color(60, 220, 110), C_WARN = new Color(255, 190, 40),
+                      C_BAD = new Color(255, 70, 60), C_ORANGE = new Color(255, 130, 40);
+
+// ore choices: ANY plus the ores in the deposit list (all ores before the first survey)
+void MenuOres()
+{
+    oreOpts.Clear(); oreOpts.Add("ANY");
+    foreach (var p in deps) { string o = p.Ore.ToUpper(); if (!p.Gone && !p.Manual && !oreOpts.Contains(o)) oreOpts.Add(o); }
+    if (oreOpts.Count == 1) for (int i = 1; i < Ores.Length; i++) oreOpts.Add(Ores[i]);
+}
+
+int MenuCount(int i) { return i == 0 ? oreOpts.Count : i == 4 ? Guards.Length : 1; }
+string MenuOpt(int i, int o) { return i == 0 ? oreOpts[o] : i == 4 ? Guards[o] : "GO"; }
+
+// the option matching what the carrier is doing now, so the selector starts there
+int MenuNow(int i)
+{
+    if (i == 0) return Math.Max(0, oreOpts.IndexOf(ores));
+    if (i != 4) return 0;
+    int best = 0;
+    for (int k = 0; k < Guards.Length; k++) { double g; Util.ParseD(Guards[k], out g); double b; Util.ParseD(Guards[best], out b); if (Math.Abs(g - minTwr) < Math.Abs(b - minTwr)) best = k; }
+    return best;
+}
+
+void Menu(string a)
+{
+    MenuOres();
+    int n = MenuNames.Length;
+    if (a == "up") { menuItem = (menuItem + n - 1) % n; menuOpt = MenuNow(menuItem); }
+    else if (a == "down") { menuItem = (menuItem + 1) % n; menuOpt = MenuNow(menuItem); }
+    else if (a == "left" || a == "right") { int m = MenuCount(menuItem); menuOpt = (menuOpt % m + (a == "left" ? m - 1 : 1)) % m; }
+    else if (a == "apply" || a == "select")
+    {
+        menuOpt = Math.Min(menuOpt, MenuCount(menuItem) - 1);
+        string c = menuItem == 0 ? "mine " + oreOpts[menuOpt] : menuItem == 1 ? "mine off" : menuItem == 2 ? "survey"
+                 : menuItem == 3 ? "recall all" : menuItem == 4 ? "mintwr " + Guards[menuOpt] : "deposits clear";
+        Command(c);
+        menuMsg = "sent: " + c; menuMsgT = T;
+    }
+    else { Log("menu: up | down | left | right | apply"); return; }
+    DrawMenu();
+}
+
+static void Box(ref MySpriteDrawFrame f, float x, float y, float w, float h, Color c)
+{
+    f.Add(new MySprite(SpriteType.TEXTURE, "SquareSimple", new Vector2(x + w / 2, y + h / 2), new Vector2(w, h), c));
+}
+
+static void Txt(ref MySpriteDrawFrame f, string s, float x, float y, float scale, Color c, TextAlignment al = TextAlignment.LEFT)
+{
+    var sp = MySprite.CreateText(s, "White", c, scale, al);
+    sp.Position = new Vector2(x, y);
+    f.Add(sp);
+}
+
+void DrawMenu()
+{
+    if (menuSurf.Count == 0) return;
+    if (oreOpts.Count == 0) MenuOres();
+    flip = !flip;
+    bool full = mining && guardWhy.Length > 0, fresh = T - menuMsgT < 4;
+    string badge = full ? "FULL" : mining ? "MINING" : "IDLE";
+    Color bc = full ? C_ORANGE : mining ? C_GOOD : C_DIM;
+    string stat = "Hold " + Util.Pct((float)(holdMax > 0 ? 1 - holdFree / holdMax : 0)) + "   Lift " + Util.Num(twrNow) + "g   Loads " + LoadsLeft();
+    string last = fresh ? menuMsg : evText.Count > 0 ? evText[evText.Count - 1] : "";
+    foreach (var s in menuSurf)
+    {
+        if (s.ContentType != ContentType.SCRIPT) s.ContentType = ContentType.SCRIPT;
+        if (s.Script != "") s.Script = "";
+        if (s.ScriptBackgroundColor != C_BG) s.ScriptBackgroundColor = C_BG;
+        Vector2 sz = s.SurfaceSize, o = (s.TextureSize - sz) / 2f;
+        float W = sz.X, H = sz.Y, k = Math.Min(W / 340, H / 252), x0 = o.X, y0 = o.Y;
+        var f = s.DrawFrame();
+        if (flip) f.Add(new MySprite());
+        Box(ref f, x0, y0, W, H, C_BG);
+        Box(ref f, x0, y0, W, 38 * k, C_PANEL);
+        Box(ref f, x0, y0 + 36 * k, W, 2 * k, C_ACC);
+        Txt(ref f, "MINING", x0 + 8 * k, y0 + 5 * k, 0.75f * k, C_ACC);
+        float bw = 90 * k;
+        Box(ref f, x0 + W - bw - 6 * k, y0 + 7 * k, bw, 24 * k, bc);
+        Txt(ref f, badge, x0 + W - bw / 2 - 6 * k, y0 + 9 * k, 0.55f * k, C_BG, TextAlignment.CENTER);
+        float rowH = 28 * k, y = y0 + 42 * k, ts = 0.62f * k;
+        for (int i = 0; i < MenuNames.Length; i++, y += rowH)
+        {
+            bool sel = i == menuItem, act = MenuCount(i) == 1;
+            if (sel) Box(ref f, x0 + 2 * k, y, W - 4 * k, rowH - 2 * k, C_SEL);
+            Txt(ref f, MenuNames[i], x0 + 10 * k, y + 2 * k, ts, i == 5 ? C_BAD : act ? C_WARN : C_ORANGE);
+            string val = act ? (sel ? "[ APPLY ]" : "")
+                       : sel ? "<  " + MenuOpt(i, Math.Min(menuOpt, MenuCount(i) - 1)) + "  >"
+                       : i == 0 ? (mining ? ores : "OFF") : Util.Num(minTwr) + " g";
+            Txt(ref f, val, x0 + W * 0.66f, y + 2 * k, ts, sel ? C_ACC : i == 0 && mining ? C_GOOD : C_DIM, TextAlignment.CENTER);
+        }
+        float fy = y0 + H - 44 * k;
+        Box(ref f, x0, fy - 4 * k, W, 2 * k, C_PANEL);
+        Txt(ref f, stat, x0 + 8 * k, fy, 0.5f * k, full ? C_ORANGE : C_TXT);
+        Txt(ref f, last, x0 + 8 * k, fy + 20 * k, 0.45f * k, fresh ? C_GOOD : C_DIM);
+        f.Dispose();
+    }
 }

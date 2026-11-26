@@ -85,7 +85,7 @@ namespace VRageMath
 
 namespace VRage
 {
-    public struct MyFixedPoint { public static explicit operator float(MyFixedPoint v) { return 0; } public static implicit operator MyFixedPoint(int v) { return new MyFixedPoint(); } }
+    public struct MyFixedPoint { public static explicit operator float(MyFixedPoint v) { return 0; } public static implicit operator MyFixedPoint(int v) { return new MyFixedPoint(); } public static explicit operator MyFixedPoint(float v) { return new MyFixedPoint(); } }
 
     public struct MyTuple<T1, T2>
     {
@@ -147,6 +147,7 @@ namespace VRage.Game.ModAPI.Ingame
         MyFixedPoint CurrentVolume { get; } MyFixedPoint MaxVolume { get; }
         void GetItems(List<MyInventoryItem> items, Func<MyInventoryItem, bool> filter = null);
         bool TransferItemTo(IMyInventory dst, MyInventoryItem item, MyFixedPoint? amount = null);
+        bool IsConnectedTo(IMyInventory other);
     }
 
     public struct SerializableDefinitionId { public string SubtypeName { get { return ""; } } }
@@ -312,7 +313,7 @@ namespace Sandbox.ModAPI.Ingame
         void Disconnect();
     }
     public interface IMyBatteryBlock : IMyFunctionalBlock { float CurrentStoredPower { get; } float MaxStoredPower { get; } ChargeMode ChargeMode { get; set; } }
-    public interface IMyGasTank : IMyFunctionalBlock { double FilledRatio { get; } float Capacity { get; } }
+    public interface IMyGasTank : IMyFunctionalBlock { double FilledRatio { get; } float Capacity { get; } bool Stockpile { get; set; } }
     public interface IMyCargoContainer : IMyTerminalBlock { }
     public interface IMyShipDrill : IMyFunctionalBlock { }
     public interface IMyOreDetector : IMyFunctionalBlock { float Range { get; } }

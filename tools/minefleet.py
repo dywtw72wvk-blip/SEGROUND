@@ -150,7 +150,7 @@ def main():
 
     drone_code = (pathlib.Path(__file__).resolve().parent.parent / "dist" / "Drone.cs").read_text(encoding="utf-8").replace(chr(13) + chr(10), chr(10))
     m = shipgen.mining_carrier()
-    pads = [(i, b) for i, b in enumerate(m.blocks) if b["key"] == "l_connector"]
+    pads = [(i, b) for i, b in enumerate(m.blocks) if b["key"] == "l_connector" and "[Dock]" in (b["name"] or "")]   # miner pads only, not the [Haul] port
     carrier_boxes = [(tuple(c[k] * shipgen.LG for k in range(3)), b["name"] or b["key"]) for b in m.blocks for c in b["cells"]]
     grids, c_extra, boxes = [], {}, []
     for n, (pi, pb) in enumerate(pads):

@@ -159,6 +159,8 @@ is docked, and reads `LSTW` for the screens.
 3. **Miner (written, not yet tested in game):** see section 9. First milestone in game: one miner mines one GPS
    shaft and unloads.
 4. **Dispatch:** 4 miners, one deposit each or shared shaft grids, depletion and re-survey, aborts.
+4b. **Haulers (written, not yet tested in game):** pickup requests, the Depot dispatcher and the Hauler role
+   (section 10).
 5. **Acceptance tests** in your world: a full run to CARRIER FULL, the lift guard, and recall.
 
 ## 7. Built so far: the carrier blueprint
@@ -187,9 +189,23 @@ the connectivity check, with no loose blocks.
   `[Mine Core]` and `[Mine UI]`, with no scripts yet.
 - **Pads:** 4 upward-facing deck connectors, `Connector [Dock] Pad 1-4`. The generator checks that nothing
   above the deck sits within 3 m of a pad.
+- **Hauler port:** `Connector [Haul] 1`, upward-facing, at the tip of an 8-block conveyor arm off the right flank,
+  raised one block, 47.5 m from the centreline. It's sized for the ALZ Hezen (section 10), which parks beside the
+  carrier, parallel to it with its nose to the carrier's bow. Its belly sits 2.5 m above the arm and clears the
+  side thrusters. The generator checks that the hauler's whole footprint (22.5 x 17.5 x 75 m) touches no carrier
+  block.
+- **Conveyors:** 59 large conveyor junctions. Two lines run along the inside of the keel walls and join across
+  the back wall. They pass the centre of each cargo container's and the reactor's side faces, with a riser from
+  every pad. The hauler arm branches off the riser under pad 4. Items only move between conveyor-linked inventories, so this network is
+  what lets miners unload into the hold, haulers load from it, and uranium reach the reactor. MineCore logs
+  `No conveyor link` if a docked ship can't reach the hold.
+- **Unchecked:** the generator can't see conveyor *port* positions; they live in the game's 3D models, not its
+  data files. The layout assumes ports at the centre of each container and reactor face. The first in-game
+  unload will confirm it.
 - **Ground:** a belly ore detector and 4 landing gears, all clear of the lift exhaust.
-- **Cockpit and comms:** an Industrial Cockpit tagged for the future Mining, Map, Miners and Cargo screens, and
-  an antenna at 10 km.
+- **Cockpit and comms:** an Industrial Cockpit with MineCore's five screens (section 8) and its hotbar preloaded,
+  and an antenna at 10 km. The antenna sits on the front corner of the deck, clear of the pads and the hauler
+  port.
 
 **One paste with the miners:** `python3 tools/minefleet.py` writes **FS Mining Carrier Atmo + 4 SCAM Miners**
 to your local F10 folder only. It does this:
@@ -237,14 +253,44 @@ provisioned with NetId 2 and the key automatically, the same way the Busters are
   - **Lift available:** the effective thrust of the thrusters pointing up, in the current air and gravity,
     divided by `MinTWR` (1.4).
   - **Hold:** free volume must cover every load out plus this one (`MinerCargo`, 31 m³ each).
-- **Pages:** plain text on the cockpit screens. The Industrial Cockpit is already tagged for them.
+- **Screens:** the Industrial Cockpit is already tagged for them.
 
   | Screen | Tag | Shows |
   |---|---|---|
-  | 0 | `[FS:Mine]` | Overview and recent events |
+  | 0 (large) | `[FS:Mine]` | Overview and recent events |
   | 1 | `[FS:Map]` | Deposits: ore, volume, distance, shafts done, miners on it |
   | 2 | `[FS:Miners]` | Each miner's state, cargo, battery and shaft |
-  | 3 | `[FS:Cargo]` | Hold fill, lift-to-weight against the guard, mass against the lift limit, loads left, ore by type |
+  | 3 (top right) | `[FS:Command]` | **Arrow-key command menu**, drawn like the Fleet carrier's Defense menu, in the same spot |
+  | 4 | `[FS:Cargo]` | Hold fill, lift-to-weight against the guard, mass against the lift limit, loads left, ore by type |
+
+  Screens 0, 1, 2 and 4 are plain text; the menu is drawn graphically. Any LCD can show one of these by putting
+  the tag in its name.
+
+- **Command menu:**
+
+  | Row | Choices | Runs |
+  |---|---|---|
+  | MINE | ANY plus the ores in the deposit list (every ore before the first survey) | `mine <ore>` |
+  | STOP MINING | apply | `mine off` |
+  | SURVEY | apply | `survey` |
+  | RECALL ALL | apply | `recall all` |
+  | LIFT GUARD | 1.2 to 2.0 | `mintwr <x>` |
+  | CLEAR DEPOSITS | apply | `deposits clear` |
+
+  - **Status:** a badge shows MINING, FULL or IDLE. The footer shows hold fill, current lift-to-weight and loads
+    left, then the last event, or what you just sent.
+  - **Choices start at the current setting:** the selector opens on the ore being mined and on the current lift
+    guard.
+
+- **Hotbar (preloaded in the blueprint):**
+
+  | Slots | Command |
+  |---|---|
+  | 1-5 | `menu up`, `menu down`, `menu left`, `menu right`, `menu apply` |
+  | 6 | `survey` |
+  | 7 | `mine any` |
+  | 8 | `mine off` |
+  | 9 | `recall all` |
 
 **Commands** (run the Mine Core PB with an argument, or bind it to the toolbar):
 
@@ -257,6 +303,7 @@ provisioned with NetId 2 and the key automatically, the same way the Busters are
 | `survey` | Read the detectors now and log the nearest deposits with their GPS |
 | `deposits clear` | Forget all deposits |
 | `mintwr <x>` | Set the lift guard |
+| `menu up\|down\|left\|right\|apply` | Drive the command menu |
 | `provision` / `forget <callsign>` / `reload` | As on the Fleet hub |
 
 **Miner side of the protocol.** These definitions are in `src/Shared/Proto.cs`. The wire formats are unchanged,
@@ -344,3 +391,160 @@ no code anyway: its automation is a separate workshop script.
 - **Height reading:** whether the planet-elevation reading puts the start of boring near the ground.
 - **Mass reading:** whether the carrier's mass includes the docked miners. The cargo page shows the mass it
   reads.
+
+## 10. Haulers and the dispatcher (written; not yet tested in game)
+
+Ore leaves the carrier without the carrier going home. The carrier asks for a pickup. A **dispatcher** at your
+base sends a **hauler**. The hauler docks on the carrier's `[Haul]` port, takes the ore, flies it home, and
+unloads into base storage.
+
+**Who runs what:**
+
+| Where | Script | Job |
+|---|---|---|
+| Carrier | MineCore | Requests pickups and loads a docked hauler from the hold |
+| Base | **Depot** (new, a dispatcher) | Registers haulers, queues requests from carriers, sends a hauler, unloads it at the base |
+| Hauler | Drone script, **Hauler role** (new) | Flies to the carrier, docks on its moving `[Haul]` port, waits to be loaded, flies home, docks, waits to be unloaded |
+
+**One network for mining logistics.** Carrier, base and haulers all use NetId 2 and the same key. Each hub only
+registers its own kind: MineCore takes miners, Depot takes haulers. That way a hauler can hear the carrier's
+frame broadcast directly, which it needs to dock on a ship that's moving. The Fleet carrier stays on NetId 1.
+
+**The flow:**
+
+1. **Request:** MineCore broadcasts `HAUL` when its hold passes `HaulAt` (say 60%), or when it's full. It
+   repeats until the Depot answers. The request carries the carrier's address, position and the volume and
+   mass waiting.
+2. **Dispatch:** the Depot puts the request in its queue and picks an idle, charged hauler that's docked or
+   nearby. It orders the hauler to fly to that carrier, giving the carrier's address and its last position.
+   Several haulers can be sent to one carrier, and haulers serve several carriers in queue order.
+3. **Docking at the carrier:** when it gets close, the hauler follows the carrier's frame broadcast and asks the
+   carrier for a port. MineCore answers with the `[Haul]` port's position and facing. The hauler docks with the
+   same moving-carrier docking the miners use.
+4. **Loading:** MineCore moves ore from the hold into the hauler's cargo through the port's conveyor link until
+   the hauler is full or the hold is empty. Then it tells the hauler it's loaded.
+5. **Home:** the hauler undocks, flies to the base, docks on a Depot `[Dock]`, and the Depot moves the ore into
+   base storage. The hauler reports done and the Depot closes the request, or sends the next trip.
+
+**Failures:**
+- **Hauler lost:** the request goes back in the queue.
+- **Carrier moved:** the hauler follows its live frame broadcast.
+- **Carrier out of radio range of the base:** the request waits.
+- **Long distances:** they need large-grid antennas (50 km) or relays in between.
+
+**What the hauler needs to have:**
+- **Docking:** a connector that can sit on an upward port (on its belly), or we add a side port to the carrier
+  to match it.
+- **Basics:** cargo containers on the same conveyor network as that connector, a remote control, gyros, and
+  thrust suited to the trip (atmospheric, or hydrogen for long or high routes).
+- **Capacity:** one full carrier hold is 844 m³, about 2,280 t of ore. A hauler that carries less just makes
+  more trips, or the Depot sends several.
+- **Script:** we put the Drone script in its PB. The Hauler role turns on when its PB or grid name contains
+  "Hauler".
+
+**Your base needs:**
+- a PB running Depot;
+- `[Dock]` connectors for the haulers, on the same conveyor network as the base's cargo containers;
+- a broadcasting antenna.
+
+**The hauler: ALZ Hezen Cargo Transporter, adapted** (workshop 3506660765, your saved copy).
+
+- **Capacity:**
+  - **Cargo:** 3 large industrial containers, about 1,266 m³.
+  - **Mass:** about 500 t empty across its 13 grids.
+  - **Lift:** 8.6 MN of upward hydrogen thrust plus some ion thrust.
+  - **What it can carry on a planet:** keeping 1.2 g of lift, about **250 t of ore, around 93 m³**, so about 9
+    trips per full carrier hold. In space it can carry its full 1,266 m³.
+  - **Fuel:** hydrogen. It needs refuelling at the base, and hovering burns it.
+- **`tools/haulerfit.py`** writes **FS Hauler (ALZ Hezen)** to your local F10 folder only. It reads your saved copy
+  (Steam Cloud), or the workshop download if that's missing. It changes only this:
+  - **Belly connector:** the magnetic plate under the centre of Cargo 2 becomes `Connector [Dock] Belly`, facing
+    down. Its conveyor port meets the bottom of Cargo 2, and the containers are already linked through their face
+    centres. Its Up points at the nose, so it docks parallel to the carrier.
+  - **Script:** the spare, switched-off PB on the bridge gets the Fleet System Drone script, renamed
+    `Programmable Block [Fleet Drone] [Hauler]`. The name picks `Role=Hauler`.
+  - **Flight scripts off:** `[FSD]`, `Subgrid Gyros` and `Cruise Control` are switched off; their code stays in
+    place. The inventory, radar, power, horizon and airlock scripts keep running.
+  - **Remote:** `Remote Control Main` is tagged `[Fleet]`, so the script flies by it rather than the docking
+    remote.
+  - **Checks:** all ids stay unique and the blueprint parses. The block check finds 2 overlaps, both thin armor
+    panels laid over rotors. They're in the original too, and the game allows them.
+- **Drone script changes for any ship:**
+  - **Controller:** a controller tagged `[Fleet]` is preferred over the others.
+  - **Docking connector:** a connector tagged `[Dock]` is preferred.
+  - **Role:** a PB or grid named "Hauler" defaults to `Role=Hauler`.
+
+**While docked, the hauler holds itself up.** Docked haulers keep their thrusters and dampeners on, unlike miners,
+so the carrier carries neither the hauler's weight nor the twist of a 500 t ship hanging 47 m off its side. Landing
+the carrier during a transfer is safest anyway.
+
+### What's built
+
+- **Shared hub code** (`src/MineHub/Hub.cs`) is used by MineCore and Depot. It holds the registry (each hub takes
+  only its own role), reliable orders, docks, the frame broadcast, provisioning, the event log, and `MoveOre`,
+  which moves ore between conveyor-linked inventories up to a mass limit and logs a missing conveyor link.
+- **Protocol** (`Proto`, `Net`; the wire version stays 4):
+  - **`O_HAUL` (13):** the Depot's order to a hauler. `a` is the carrier's position when it asked, `id` its
+    address.
+  - **`HAUL` broadcast:** the carrier's pickup request, carrying its position, the m³ and kg waiting, and its name.
+  - **`VISIT` (carrier to hauler):** `V_DOCK` (the port's position and facing in the carrier's frame), `V_WAIT`,
+    `V_LOADED` or `V_NONE`.
+  - **`VREQ` (hauler to carrier):** `R_DOCK`, carrying the kg the hauler can still lift, or `R_LEFT`.
+- **MineCore (carrier):**
+  - **Asking:** it broadcasts a pickup request every second while the hold is at least `HaulAt` (60%) full, or
+    the carrier is full. It keeps asking until the hold is below 5%.
+  - **Port:** a hauler that asks gets the `[Haul]` port, or `V_WAIT` if another hauler is visiting, or `V_NONE`
+    if there's under a tonne of ore.
+  - **Loading:** it loads the docked hauler from the hold, capped at the mass the hauler said it can lift. It
+    stops at that mass, when the hold is empty, or when nothing has moved for 15 s. Then it sends `V_LOADED`.
+  - **Safety:** a ship on the port that never asked gets nothing.
+  - **Screens:** a "Pickup:" line on screens 0 and 4.
+  - **Command:** `haul` asks for a pickup now; `haul off` stops asking.
+- **Depot (base, new script):**
+  - **Requests:** it hears the requests and drops any not repeated for 20 s.
+  - **Dispatch:** each carrier gets enough haulers for what's waiting (ore / `HaulerLoad`, 250 t), at most
+    `MaxPerCarrier` (3).
+  - **Which hauler:** one docked at the base, unloaded, charged above `LaunchBattery` (60%) and fuelled above
+    `LaunchHydrogen` (50%), launched `LaunchInterval` (10 s) apart.
+  - **Return:** a hauler back with ore (F_FULL) or empty (F_DONE) gets a `[Dock]` connector at the base, and its
+    ore is moved into the base's cargo containers.
+  - **Status:** shown on LCDs or cockpit screens tagged `[FS:Depot]`, and in the PB's info.
+  - **Commands:** `dispatch on|off`, `recall`, `provision`, `forget`, `reload`.
+- **Hauler role (Drone script):**
+  1. On `O_HAUL` it undocks and flies to the carrier, holding `HaulStandoff` (150 m) off its side and 40 m up,
+     at least `MinAltitude` (60 m) over the ground.
+  2. Once it hears the carrier's frame broadcast, it asks for a port every 3 s, saying how much it can lift
+     while keeping `HaulTWR` (1.25 g).
+  3. It docks on the port by the carrier's own frame broadcast, so the carrier can be moving. Docked, it keeps
+     its thrusters and dampeners on.
+  4. On `V_LOADED` it undocks and reports F_FULL, or F_DONE if it got nothing. It then holds beside the carrier
+     until the Depot sends it home.
+  5. Docked at the base it powers down, and its hydrogen tanks refill from the base.
+  - **Timeouts:** it gives up after 15 min without a port, or 15 min docked without being told it's loaded.
+  - **Resent orders:** a resent `O_HAUL` for the carrier it's already working is ignored.
+- **Every drone:**
+  - **Long approaches:** a docking approach from more than 300 m out keeps `MinAltitude` over the ground.
+  - **Gyros:** only the controller's own grid is used, so a gyro on a rotor part isn't driven.
+
+### Setting up your base
+
+1. **Depot:** on a PB on your base, put `[Fleet Depot]` in its name. Then run `install.bat` with the game
+   closed; it now writes the Depot script into that block (and Mine Core into `[Mine Core]`). Or paste
+   `dist/Depot.cs` by hand.
+2. **Network:** in the Depot PB's Custom Data, set the same `NetId` (default 2) and `Key` as the carrier's Mine Core.
+3. **Docks:** give the base at least one **upward-facing** connector named with `[Dock]`. It must be on the same
+   conveyor network as the base's cargo containers, and have room around it for the Hezen (22.5 m x 75 m, 17.5 m
+   tall). The hauler docks on it with its belly connector.
+4. **Antenna:** a broadcasting antenna that reaches the mining site, so the carrier's requests and the haulers'
+   status get through. Use relays if it's far.
+5. **Fuel:** hydrogen on the base's conveyor network (tanks or generators with ice), so docked haulers refuel.
+6. **The hauler:** run `python3 tools/haulerfit.py` to write **FS Hauler (ALZ Hezen)** to your F10 list. Paste it
+   docked on the base's `[Dock]` connector, or let it register and run `recall`. The Depot provisions it with the
+   key when it docks.
+
+**Things to watch on the first runs:**
+- **Payload:** how much the Hezen really lifts. It reports this itself when it asks for a port; the carrier logs
+  "Hauler inbound, can lift N t".
+- **Docking on the arm:** whether the arm port lines up. If it's off, the Hezen gets close and retries.
+- **Conveyor link:** whether the port's link into the Hezen's Cargo 2 works. If not, MineCore logs
+  `No conveyor link`.

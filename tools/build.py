@@ -28,7 +28,8 @@ SCRIPTS = {
     "HubUI": ["HubUI/Program.cs", "HubUI/Draw.cs"] + SHARED,
     "Drone": ["Drone/Program.cs", "Drone/Flight.cs"] + SHARED + ["Shared/Telemetry.cs", "Shared/Wc.cs"],
     "Factory": ["Factory/Program.cs"] + SHARED,
-    "MineCore": ["MineCore/Program.cs", "HubCore/Drone.cs", "HubCore/Docks.cs"] + SHARED,
+    "MineCore": ["MineCore/Program.cs", "MineHub/Hub.cs", "HubCore/Drone.cs", "HubCore/Docks.cs"] + SHARED,
+    "Depot": ["Depot/Program.cs", "MineHub/Hub.cs", "HubCore/Drone.cs", "HubCore/Docks.cs"] + SHARED,
 }
 
 USINGS = """using System;

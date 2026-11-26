@@ -97,6 +97,7 @@ B = {
     "l_reactor_big": ("Reactor", "LargeBlockLargeGenerator", "Large", (3, 3, 3), 73795.0, 0, False),
     "l_ore":       ("OreDetector", "LargeOreDetector", "Large", (1, 1, 2), 1545.0, 0, False),
     "l_gear":      ("LandingGear", "LargeBlockLandingGear", "Large", (1, 2, 3), 3304.0, 0, False),
+    "l_conveyor":  ("Conveyor", "LargeBlockConveyor", "Large", (1, 1, 1), 524.0, 0, False),
 }
 ORE_T_PER_M3 = 2.7            # ore and stone: ~0.37 L/kg
 LARGE_CONTAINER_M3 = 421.875  # large-grid Large Cargo Container at 1x block inventory
@@ -473,9 +474,24 @@ def carrier():
 #   x3..7 (shell) holds the hold, reactor, gyros, batteries, PBs.
 #   deck y5; pads at (3|7, 6, 5|12), 10 m x 17.5 m apart, nothing else
 #   within 3 m of a pad above the deck.
+#   Hauler port: an 8-block conveyor arm off the right flank at deck level,
+#   the port raised one block at its tip, 47.5 m from the centreline, so a
+#   hauler the size of the ALZ Hezen (75 x 22 x 17.5 m, belly connector)
+#   parks beside the carrier, belly 2.5 m above the arm, clear of the side
+#   thrusters; its footprint is checked against every carrier block.
+#   Conveyors: two lines along the inside of the keel walls (x3 and x7,
+#   y2, z2..17) joined across the back wall, passing the centre of every
+#   hold and reactor face beside them; a riser from each pad and from the
+#   hauler arm down to its line. Items only move between conveyor-linked
+#   inventories, so this is what lets MineCore unload miners into the hold
+#   and load haulers from it.
 # ======================================================================
 MINE_CONTAINERS = 2
 MINE_PADS = [(3, 6, 5), (7, 6, 5), (3, 6, 12), (7, 6, 12)]
+HAUL_PORT = (19, 6, 12)     # upward connector for a hauler, tip of the right-flank arm
+# the hauler's box relative to the port cell (cells), docked nose to the carrier's bow (ALZ Hezen:
+# 22.5 wide, 17.5 tall above its belly, connector 33.7 m behind its nose and 41.3 m ahead of its tail)
+HAUL_BOX = ((-4.6, 0.5, -13.6), (4.6, 7.6, 16.6))
 MINER_MASS_T, MINER_CARGO_M3 = 40.2, 31.25      # SCAM Min3r 69R: dry mass, 2 small-grid large containers
 
 
@@ -495,13 +511,33 @@ def mining_carrier():
         s.add("l_battery", (x, 2, z), name=f"Battery {i + 1}")
     s.add("l_pb", (4, 3, 13), name="Programmable Block [Mine Core]", program="MineCore")   # PBs mount on their bottom: on batteries
     s.add("l_pb", (6, 3, 13), name="Programmable Block [Mine UI]")
+    # conveyor network (placed before the armor, which fills around it)
+    for x in (3, 7):
+        for z in range(2, 18):
+            s.add("l_conveyor", (x, 2, z))
+    for x in (4, 5, 6):
+        s.add("l_conveyor", (x, 2, 17))
+    for (x, _, z) in MINE_PADS:
+        for y in (3, 4, 5):
+            s.add("l_conveyor", (x, y, z))
+    # hauler arm: across the deck from the pad riser at (7, 5, 12), out over the side, up into the port
+    hx, hy, hz = HAUL_PORT
+    for x in range(8, hx + 1):
+        s.add("l_conveyor", (x, hy - 1, hz))
     s.fill((3, 0, 0), (7, 4, 17), "l_armor", shell=True)
     # deck and pads
     s.fill((0, 5, 0), (10, 5, 17), "l_armor")
     for i, p in enumerate(MINE_PADS):
         s.add("l_connector", p, fwd="Up", up="Forward", name=f"Connector [Dock] Pad {i + 1}")
-    s.add("l_cockpit", (5, 6, 0), fwd="Forward", up="Up", name="Cockpit [FS:Mine:0] [FS:Map:1] [FS:Miners:2] [FS:Cargo:3]")
-    s.add("l_antenna", (10, 6, 16), name="Antenna", extra="<BroadcastRadius>10000</BroadcastRadius>")
+    # screens: 0 overview, 1 deposits, 2 miners, 3 the arrow-key command menu (where the Fleet carrier
+    # has its Defense menu), 4 cargo. Hotbar: slots 1-5 drive the menu, 6-9 are direct shortcuts.
+    core = "Programmable Block [Mine Core]"
+    bar = toolbar([(i, core, "menu " + a) for i, a in enumerate(["up", "down", "left", "right", "apply"])] +
+                  [(5, core, "survey"), (6, core, "mine any"), (7, core, "mine off"), (8, core, "recall all")])
+    s.add("l_cockpit", (5, 6, 0), fwd="Forward", up="Up",
+          name="Cockpit [FS:Mine:0] [FS:Map:1] [FS:Miners:2] [FS:Command:3] [FS:Cargo:4]", extra=bar)
+    s.add("l_connector", HAUL_PORT, fwd="Up", up="Forward", name="Connector [Haul] 1")   # Up = bow: the hauler docks parallel
+    s.add("l_antenna", (0, 6, 0), name="Antenna", extra="<BroadcastRadius>10000</BroadcastRadius>")   # front corner, clear of pads and port
     # belly: ore detector and landing gear (clear of the lift exhaust columns)
     s.add("l_ore", (5, -1, 8), fwd="Forward", up="Up", name="Ore Detector")
     for i, (x, z) in enumerate([(4, 1), (6, 1), (4, 14), (6, 14)]):
@@ -519,10 +555,16 @@ def mining_carrier():
         for x in (10, 11, 12, -2, -1, 0):
             s.add("l_armor", (x, 6, z))
     s.check_exhaust(depth=4)
-    for p in MINE_PADS:     # pad clearance: nothing above the deck within 3 m (1 cell) of a pad but the pad
+    # clearance above the deck: 1 cell round a miner pad
+    for p in MINE_PADS:
         for c, who in s.cells.items():
             if c[1] >= 6 and abs(c[0] - p[0]) <= 1 and abs(c[2] - p[2]) <= 1 and c != p:
                 raise ValueError(f"{s.name}: {who} at {c} blocks the miner pad at {p}")
+    # a docked hauler's box must not touch any carrier block
+    lo, hi = HAUL_BOX
+    for c, who in s.cells.items():
+        if all(lo[k] < c[k] - HAUL_PORT[k] + 0.5 and c[k] - HAUL_PORT[k] - 0.5 < hi[k] for k in range(3)):
+            raise ValueError(f"{s.name}: {who} at {c} is inside the docked hauler's space")
     return s
 
 

@@ -43,6 +43,9 @@ long atkId; bool handed;
 Vector3D atkAz;
 double zCmd, zTop, zCheck, oreCheck, oreVol, nextOre, mineT;
 bool mineFull, mineDone, mineHome, boring;
+long carAddr; bool visiting;
+readonly HubFrame car = new HubFrame();
+double carNavT = -1e9, visReqT, haulTwr, haulStand;
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
 bool registered, controlling, arrived, combatOn, leashBreak;
 long hubAddr;
@@ -70,7 +73,7 @@ var ini = new MyIni();
 ini.Set("s", "reg", registered); ini.Set("s", "hub", hubAddr); ini.Set("s", "call", call);
 ini.Set("s", "task", task); ini.Set("s", "tId", tId); ini.Set("s", "pTask", pTask); ini.Set("s", "pId", pId);
 ini.Set("s", "epoch", epoch); ini.Set("s", "lastN", lastN); ini.Set("s", "ack", ack);
-ini.Set("s", "base", tel.Baseline); ini.Set("s", "uLocal", uLocal);
+ini.Set("s", "base", tel.Baseline); ini.Set("s", "uLocal", uLocal); ini.Set("s", "car", carAddr);
 SetV(ini, "tA", tA); SetV(ini, "tB", tB); SetV(ini, "tC", tC);
 SetV(ini, "pA", pA); SetV(ini, "pB", pB); SetV(ini, "pC", pC);
 SetV(ini, "hold", holdPos); SetV(ini, "hf", holdFwd); SetV(ini, "hu", holdUp);
@@ -85,7 +88,7 @@ registered = ini.Get("s", "reg").ToBoolean(); hubAddr = ini.Get("s", "hub").ToIn
 task = ini.Get("s", "task").ToInt32(); tId = ini.Get("s", "tId").ToInt64();
 pTask = ini.Get("s", "pTask").ToInt32(); pId = ini.Get("s", "pId").ToInt64();
 epoch = ini.Get("s", "epoch").ToInt64(-1); lastN = ini.Get("s", "lastN").ToInt64(-1); ack = ini.Get("s", "ack").ToInt64();
-tel.Baseline = Math.Max(tel.Baseline, ini.Get("s", "base").ToInt32()); uLocal = ini.Get("s", "uLocal").ToBoolean();
+tel.Baseline = Math.Max(tel.Baseline, ini.Get("s", "base").ToInt32()); uLocal = ini.Get("s", "uLocal").ToBoolean(); carAddr = ini.Get("s", "car").ToInt64();
 tA = GetV(ini, "tA"); tB = GetV(ini, "tB"); tC = GetV(ini, "tC");
 pA = GetV(ini, "pA"); pB = GetV(ini, "pB"); pC = GetV(ini, "pC");
 holdPos = GetV(ini, "hold"); holdFwd = GetV(ini, "hf"); holdUp = GetV(ini, "hu");
@@ -101,18 +104,21 @@ key = cfg.S("Key", "");
 bool spot = Me.CustomName.Contains("Spotter") || Me.CubeGrid.CustomName.Contains("Spotter");
 drills.Clear(); GridTerminalSystem.GetBlocksOfType(drills, b => b.IsSameConstructAs(Me));
 bool miner = drills.Count > 0 || Me.CustomName.Contains("Miner");
-role = cfg.S("Role", spot ? "Spotter" : miner ? "Miner" : "Buster");
+bool haul = Me.CustomName.Contains("Hauler") || Me.CubeGrid.CustomName.Contains("Hauler");
+role = cfg.S("Role", spot ? "Spotter" : haul ? "Hauler" : miner ? "Miner" : "Buster");
 boreSpeed = cfg.D("BoreSpeed", 0.8);
 fullAt = cfg.D("FullAt", 0.92);
 mineBatt = cfg.D("MineReserve", 0.35);
 noOreRun = cfg.D("NoOreRun", 6);
 perfMode = cfg.S("Perf", "Normal").ToUpper();
-maxSpeed = cfg.D("MaxSpeed", miner ? 40 : 100);
+maxSpeed = cfg.D("MaxSpeed", miner ? 40 : haul ? 80 : 100);
 dockSpeed = cfg.D("DockSpeed", 1.5);
 approach = cfg.D("ApproachDistance", 25);
 clearance = cfg.D("Clearance", 15);
 reconSpeed = cfg.D("ReconSpeed", spot ? 35 : 60);
-minAlt = cfg.D("MinAltitude", miner ? 25 : 150);
+minAlt = cfg.D("MinAltitude", miner ? 25 : haul ? 60 : 150);
+haulTwr = Math.Max(1.05, cfg.D("HaulTWR", 1.25));
+haulStand = cfg.D("HaulStandoff", 150);
 standoff = cfg.D("RingDistance", 2800);
 cone = cfg.D("RingCone", 20);
 ringRate = cfg.D("RingRate", 2);
@@ -172,7 +178,7 @@ var g = b as IMyGyro; if (g != null) { gyr.Add(g); continue; }
 var c = b as IMyShipController;
 if (c != null)
 {
-if (ctlTag.Length > 0 ? b.CustomName.Contains(ctlTag) : c is IMyRemoteControl) ctl = c;
+if (ctlTag.Length > 0 ? b.CustomName.Contains(ctlTag) : (b.CustomName.Contains("[Fleet]") || (c is IMyRemoteControl && (ctl == null || !ctl.CustomName.Contains("[Fleet]"))))) ctl = c;
 if (anyCtl == null) anyCtl = c;
 continue;
 }
@@ -185,8 +191,9 @@ var a = b as IMyRadioAntenna; if (a != null && (ant == null || a.IsWorking)) ant
 if (ctl == null) ctl = anyCtl;
 inFactory = false;
 foreach (var b in blocks) if (b != Me && b is IMyProgrammableBlock && (b.CustomData.Contains("[Hub]") || b.CustomData.Contains("[Factory]"))) { inFactory = true; break; }
-if (ctl != null) thr.RemoveAll(t => t.CubeGrid != ctl.CubeGrid);
-foreach (var k in conns) if (connTag.Length == 0 || k.CustomName.Contains(connTag)) { conn = k; break; }
+if (ctl != null) { thr.RemoveAll(t => t.CubeGrid != ctl.CubeGrid); gyr.RemoveAll(g => g.CubeGrid != ctl.CubeGrid); }
+foreach (var k in conns) if (connTag.Length > 0 ? k.CustomName.Contains(connTag) : k.CustomName.Contains("[Dock]")) { conn = k; break; }
+if (conn == null && connTag.Length == 0 && conns.Count > 0) conn = conns[0];
 tel.Bind(blocks);
 if (ctl != null) fl.Bind(ctl, thr, gyr);
 if (combatIdleOff || combatOn) foreach (var b in combat) if (b.Enabled != combatOn) b.Enabled = combatOn;
@@ -218,6 +225,7 @@ case Proto.O_ATTACK: atkT = T; atkId = tId; Enter(Proto.S_ATTACK); SetCombat(tru
 case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
 case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
 case Proto.O_MINE: StartMine(); break;
+case Proto.O_HAUL: visiting = true; Enter(Proto.S_TRANSIT); break;
 case Proto.O_UNDOCK:
 if (pTask != Proto.O_NONE) Enter(Proto.S_UNDOCKING);
 else { CaptureHold(); Enter(Proto.S_HOLD); }
@@ -292,6 +300,7 @@ void Receive()
 while (navL.HasPendingMessage)
 {
 var m = navL.AcceptMessage();
+if (visiting && m.Source == carAddr) { if (net.ReadNav(m, car)) { car.T = T; carNavT = T; } continue; }
 if (!registered || m.Source != hubAddr) continue;
 if (net.ReadNav(m, hub)) { hub.T = T; navT = T; }
 }
@@ -299,7 +308,11 @@ while (uni.HasPendingMessage)
 {
 var m = uni.AcceptMessage();
 long seq; int code; Vector3D a, b, c; long id; string text;
-if (!net.ReadOrder(m, out seq, out code, out a, out b, out c, out id, out text)) continue;
+if (!net.ReadOrder(m, out seq, out code, out a, out b, out c, out id, out text))
+{
+if (visiting && m.Source == carAddr && net.ReadVisit(m, out code, out a, out b, out c, out id)) OnVisit(code, a, b, c, id);
+continue;
+}
 if (code == Proto.O_REGISTER)
 {
 if (registered && m.Source != hubAddr && NavFresh()) continue;
@@ -334,6 +347,7 @@ net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt
 void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
 bool connected = Connected();
+if (code == Proto.O_HAUL && visiting && id == carAddr) return;
 if (state == Proto.S_BORE || state == Proto.S_ASCEND)
 {
 if (code == Proto.O_MINE && (a - tA).LengthSquared() < 0.01) { Store(code, a, b, c, id); return; }
@@ -349,6 +363,7 @@ case Proto.O_ATTACK:
 case Proto.O_LOITER:
 case Proto.O_INTERCEPT:
 case Proto.O_MINE:
+case Proto.O_HAUL:
 if (connected) { task = code; SetPending(code, a, b, c, id); BeginUndock(); }
 else if (state == Proto.S_UNDOCKING) { task = code; SetPending(code, a, b, c, id); }
 else Execute(code, a, b, c, id);
@@ -380,6 +395,8 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
 Store(code, a, b, c, id);
 mineFull = mineDone = mineHome = false;
+visiting = code == Proto.O_HAUL;
+if (visiting) carAddr = id;
 arrived = false;
 switch (code)
 {
@@ -405,6 +422,7 @@ atkT = T; atkId = id;
 if (state != Proto.S_INTERCEPT) { handed = false; Enter(Proto.S_INTERCEPT); }
 break;
 case Proto.O_MINE: StartMine(); break;
+case Proto.O_HAUL: visReqT = 0; Enter(Proto.S_TRANSIT); break;
 }
 }
 void CaptureHold()
@@ -429,8 +447,8 @@ var oc = conn != null ? conn.OtherConnector : null;
 if (oc != null) { uF = oc.WorldMatrix.Forward; uP = oc.GetPosition(); }
 else if (conn != null) { uF = -conn.WorldMatrix.Forward; uP = conn.GetPosition(); }
 else { uF = -ctl.WorldMatrix.Forward; uP = fl.Pos; }
-uLocal = NavFresh();
-if (uLocal) { MatrixD m = hub.Matrix(T); uP = HubFrame.ToLocal(m, uP); uF = HubFrame.DirToLocal(m, uF); }
+uLocal = DFresh();
+if (uLocal) { MatrixD m = DF().Matrix(T); uP = HubFrame.ToLocal(m, uP); uF = HubFrame.DirToLocal(m, uF); }
 DockedPower(false);
 if (conn != null) conn.Disconnect();
 Enter(Proto.S_UNDOCKING);
@@ -442,7 +460,7 @@ s == Proto.S_FINAL || s == Proto.S_UNDOCKING || s == Proto.S_LINKLOST || s == Pr
 s == Proto.S_LOITER || s == Proto.S_INTERCEPT || s == Proto.S_TRANSIT || s == Proto.S_BORE || s == Proto.S_ASCEND;
 bool station = s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_ENGAGED;
 if (!station) { leashBreak = false; if (combatOn) SetCombat(false); }
-if (s == Proto.S_DOCKED) { fl.Release(true); DockedPower(true); controlling = false; }
+if (s == Proto.S_DOCKED) { fl.Release(true); if (!visiting) DockedPower(true); controlling = false; }
 else if (s == Proto.S_ENGAGED) { if (controlling) fl.Release(true); controlling = false; }
 else if (!flying) { if (controlling) fl.Release(true); controlling = false; }
 else if (!controlling) { fl.Engage(); controlling = true; }
@@ -454,7 +472,7 @@ state = s; stateT = T;
 }
 void Step()
 {
-bool fresh = NavFresh();
+bool fresh = DFresh();
 switch (state)
 {
 case Proto.S_IDLE:
@@ -482,6 +500,7 @@ if (!fresh) { LinkLost(); break; }
 FlyFinal();
 break;
 case Proto.S_DOCKED:
+if (visiting && T - stateT > 900) { BeginUndock(); break; }
 if (conn != null && conn.Status == MyShipConnectorStatus.Connectable) conn.Connect();
 else if (!Connected()) { DockedPower(false); CaptureHold(); Enter(Proto.S_HOLD); }
 break;
@@ -501,6 +520,8 @@ case Proto.S_INTERCEPT:
 FlyIntercept();
 break;
 case Proto.S_TRANSIT:
+if (visiting) FlyHaul(); else FlyMine();
+break;
 case Proto.S_BORE:
 case Proto.S_ASCEND:
 FlyMine();
@@ -741,13 +762,15 @@ U = Util.Norm(HubFrame.DirToWorld(m, tC));
 void FlyApproach()
 {
 if (conn == null) { CaptureHold(); Enter(Proto.S_HOLD); return; }
-MatrixD m = hub.Matrix(T);
+MatrixD m = DF().Matrix(T);
 Vector3D P, F, U; DockFrame(m, out P, out F, out U);
 Vector3D A = P + F * approach;
 Vector3D cp = conn.GetPosition();
 Vector3D off = cp - fl.Pos;
-Vector3D tv = hub.VelAt(A, m);
-fl.FlyTo(Avoid(A - off, m), tv, maxSpeed);
+Vector3D tv = DF().VelAt(A, m);
+Vector3D dest = Avoid(A - off, m);
+if ((A - cp).Length() > 300) dest = Lift(dest);
+fl.FlyTo(dest, tv, maxSpeed);
 fl.Aim(conn.WorldMatrix, -F, U);
 double posErr = (cp - A).Length();
 double relV = (fl.Vel - tv).Length();
@@ -755,7 +778,7 @@ if (posErr < 1.5 && relV < 1.0 && Flight.AimError(conn.WorldMatrix, -F) < 0.05) 
 }
 void FlyFinal()
 {
-MatrixD m = hub.Matrix(T);
+MatrixD m = DF().Matrix(T);
 Vector3D P, F, U; DockFrame(m, out P, out F, out U);
 Vector3D cp = conn.GetPosition();
 Vector3D rel = cp - P;
@@ -764,7 +787,7 @@ double lateral = (rel - F * axial).Length();
 if (lateral > 2.5 || axial < -1 || T - stateT > 60) { Enter(Proto.S_APPROACH); return; }
 if (conn.Status == MyShipConnectorStatus.Connectable) conn.Connect();
 if (conn.Status == MyShipConnectorStatus.Connected) { Enter(Proto.S_DOCKED); return; }
-fl.FlyTo(P - (cp - fl.Pos), hub.VelAt(P, m), dockSpeed);
+fl.FlyTo(P - (cp - fl.Pos), DF().VelAt(P, m), dockSpeed);
 fl.Aim(conn.WorldMatrix, -F, U);
 }
 void FlyUndock()
@@ -772,8 +795,8 @@ void FlyUndock()
 Vector3D P, F, tv;
 if (uLocal)
 {
-MatrixD m = hub.Matrix(T);
-P = HubFrame.ToWorld(m, uP); F = Util.Norm(HubFrame.DirToWorld(m, uF)); tv = hub.VelAt(P, m);
+MatrixD m = DF().Matrix(T);
+P = HubFrame.ToWorld(m, uP); F = Util.Norm(HubFrame.DirToWorld(m, uF)); tv = DF().VelAt(P, m);
 }
 else { P = uP; F = Util.Norm(uF); tv = Vector3D.Zero; }
 Vector3D cp = conn != null ? conn.GetPosition() : fl.Pos;
@@ -787,13 +810,15 @@ if (pTask != Proto.O_NONE)
 int c = pTask; pTask = Proto.O_NONE;
 Execute(c, pA, pB, pC, pId);
 }
+else if (visiting) LeaveCarrier();
 else StationHere();
 }
 }
 Vector3D Avoid(Vector3D tgt, MatrixD m)
 {
-if (!hub.Valid || hub.BoxH.LengthSquared() < 1) return tgt;
-Vector3D h = hub.BoxH + new Vector3D(clearance), bc = hub.BoxC;
+var hf = DF();
+if (!hf.Valid || hf.BoxH.LengthSquared() < 1) return tgt;
+Vector3D h = hf.BoxH + new Vector3D(clearance), bc = hf.BoxC;
 Vector3D p = HubFrame.ToLocal(m, fl.Pos) - bc, t = HubFrame.ToLocal(m, tgt) - bc;
 if (InBox(p, h))
 {
@@ -827,6 +852,43 @@ t0 = Math.Max(t0, a); t1 = Math.Min(t1, b);
 if (t0 > t1) return false;
 }
 return true;
+}
+HubFrame DF() { return visiting ? car : hub; }
+bool DFresh() { return visiting ? T - carNavT < linkTimeout : NavFresh(); }
+double Payload()
+{
+double g = fl.Grav.Length();
+if (g < 0.1) return 1e9;
+return Math.Max(0, fl.AccelAlong(-fl.Grav / g) * fl.Mass / (g * haulTwr) - fl.Mass);
+}
+void FlyHaul()
+{
+bool cf = T - carNavT < linkTimeout;
+Vector3D cp = cf ? car.Pos : tA, u = UpRef(ctl.WorldMatrix.Up);
+Vector3D off = fl.Pos - cp;
+off -= u * Vector3D.Dot(off, u);
+Vector3D side = off.LengthSquared() > 1 ? Util.Norm(off) : Util.Perp(u);
+Vector3D dest = Lift(cp + side * haulStand + u * 40);
+fl.FlyTo(cf ? Avoid(dest, car.Matrix(T)) : dest, cf ? car.Vel : Vector3D.Zero, maxSpeed);
+Vector3D h = cp - fl.Pos;
+h -= u * Vector3D.Dot(h, u);
+if (h.LengthSquared() > 100) holdFwd = Util.Norm(h);
+fl.Aim(ctl.WorldMatrix, holdFwd, u);
+if (cf && (fl.Pos - cp).Length() < haulStand + 400 && T >= visReqT) { net.SendVReq(carAddr, Proto.R_DOCK, Payload()); visReqT = T + 3; }
+if (T - stateT > 900) LeaveCarrier();
+}
+void OnVisit(int code, Vector3D a, Vector3D b, Vector3D c, long id)
+{
+if (code == Proto.V_DOCK && state == Proto.S_TRANSIT) { tA = a; tB = b; tC = c; tId = id; Enter(Proto.S_APPROACH); }
+else if (code == Proto.V_NONE && state == Proto.S_TRANSIT) LeaveCarrier();
+else if (code == Proto.V_LOADED && state == Proto.S_DOCKED && visiting) BeginUndock();
+}
+void LeaveCarrier()
+{
+net.SendVReq(carAddr, Proto.R_LEFT, 0);
+visiting = false;
+if (tel.Cargo > 0.02) mineFull = true; else mineDone = true;
+CaptureHold(); Enter(Proto.S_HOLD);
 }
 void StartMine()
 {
@@ -927,6 +989,7 @@ bool NavFresh() { return hub.Valid && T - navT < linkTimeout; }
 void DockedPower(bool docked)
 {
 fl.SetPower(!docked);
+foreach (var t in tel.Tanks) if (!t.Closed && t.Stockpile != docked) t.Stockpile = docked;
 foreach (var b in tel.Bats)
 {
 if (!docked && !b.Enabled) b.Enabled = true;
@@ -1109,14 +1172,17 @@ foreach (var g in gyros) if (g.Enabled != on) g.Enabled = on;
 static class Proto
 {
 public const int Version = 4;
-public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6;
+public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4, M_CON = 5, M_DES = 6,
+M_HAUL = 7, M_VIS = 8, M_VREQ = 9;
 public const int O_NONE = 0, O_REGISTER = 1, O_ESCORT = 2, O_HOLD = 3, O_GOTO = 4,
 O_DOCK = 5, O_UNDOCK = 6, O_STOP = 7,
 O_SEARCH = 8,
 O_ATTACK = 9,
 O_LOITER = 10,
 O_INTERCEPT = 11,
-O_MINE = 12;
+O_MINE = 12,
+O_HAUL = 13;
+public const int V_DOCK = 1, V_WAIT = 2, V_LOADED = 3, V_NONE = 4, R_DOCK = 1, R_LEFT = 2;
 public const int MODE_AUTO = 0, MODE_CARRIER = 1, MODE_BASE = 2;
 public const int S_BOOT = 0, S_UNPROV = 1, S_REGISTERING = 2, S_IDLE = 3, S_HOLD = 4,
 S_ESCORT = 5, S_GOTO = 6, S_APPROACH = 7, S_FINAL = 8, S_DOCKED = 9,
@@ -1136,7 +1202,7 @@ static readonly string[] facs = { "IDLE", "BUILDING", "SECURING", "RELEASING", "
 public static string FactoryName(int s) { return s >= 0 && s < facs.Length ? facs[s] : "?"; }
 static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
 "APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT", "TRANSIT", "BORE", "ASCEND" };
-static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE" };
+static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE", "HAUL" };
 static readonly string[] modes = { "AUTO", "CARRIER", "BASE" };
 static readonly string[] alerts = { "GREEN", "YELLOW", "RED" };
 public static string StateName(int s) { return s >= 0 && s < states.Length ? states[s] : "?"; }
@@ -1302,7 +1368,8 @@ class Net
 {
 public readonly IMyIntergridCommunicationSystem IGC;
 public int NetId, KeyHash;
-public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "";
+public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "",
+THaul = "", TVis = "", TVReq = "";
 public Net(IMyIntergridCommunicationSystem igc) { IGC = igc; }
 public void Configure(int netId, string key)
 {
@@ -1311,6 +1378,7 @@ KeyHash = Util.Hash(key ?? "");
 string p = "FS" + netId + "/";
 TNav = p + "nav"; THello = p + "hello"; TSts = p + "sts"; TOrd = p + "ord";
 TCmd = p + "cmd"; TSnap = p + "snap"; TFac = p + "fac"; TFacSt = p + "facst"; TCon = p + "con"; TDes = p + "des";
+THaul = p + "haul"; TVis = p + "vis"; TVReq = p + "vreq";
 }
 MyTuple<int, int, int, int, long> Hdr(int type, long seq)
 {
@@ -1425,6 +1493,48 @@ id = d.Item2.Item1; size = d.Item2.Item2; pos = d.Item3.Item1; vel = d.Item3.Ite
 if (id == 0) id = -2;
 return true;
 }
+public void SendHaul(Vector3D pos, double m3, double kg, string name)
+{
+IGC.SendBroadcastMessage(THaul, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>(
+Hdr(Proto.M_HAUL, 0), new MyTuple<Vector3D, double, double, string>(pos, m3, kg, name ?? "")));
+}
+public bool ReadHaul(MyIGCMessage m, out Vector3D pos, out double m3, out double kg, out string name)
+{
+pos = Vector3D.Zero; m3 = kg = 0; name = "";
+if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>)) return false;
+var h = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>)m.Data;
+if (!Ok(h.Item1, Proto.M_HAUL)) return false;
+pos = h.Item2.Item1; m3 = h.Item2.Item2; kg = h.Item2.Item3; name = h.Item2.Item4;
+return true;
+}
+public bool SendVisit(long to, int code, Vector3D a, Vector3D b, Vector3D c, long id)
+{
+return IGC.SendUnicastMessage(to, TVis, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>(
+Hdr(Proto.M_VIS, 0), new MyTuple<int, Vector3D, Vector3D, Vector3D, long>(code, a, b, c, id)));
+}
+public bool ReadVisit(MyIGCMessage m, out int code, out Vector3D a, out Vector3D b, out Vector3D c, out long id)
+{
+code = 0; a = b = c = Vector3D.Zero; id = 0;
+if (m.Tag != TVis || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>)) return false;
+var v = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>)m.Data;
+if (!Ok(v.Item1, Proto.M_VIS)) return false;
+code = v.Item2.Item1; a = v.Item2.Item2; b = v.Item2.Item3; c = v.Item2.Item4; id = v.Item2.Item5;
+return true;
+}
+public bool SendVReq(long to, int code, double kg)
+{
+return IGC.SendUnicastMessage(to, TVReq, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>(
+Hdr(Proto.M_VREQ, 0), new MyTuple<int, double>(code, kg)));
+}
+public bool ReadVReq(MyIGCMessage m, out int code, out double kg)
+{
+code = 0; kg = 0;
+if (m.Tag != TVReq || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>)) return false;
+var v = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>)m.Data;
+if (!Ok(v.Item1, Proto.M_VREQ)) return false;
+code = v.Item2.Item1; kg = v.Item2.Item2;
+return true;
+}
 }
 class HubFrame
 {
@@ -1462,6 +1572,7 @@ class Telemetry
 {
 public readonly List<IMyBatteryBlock> Bats = new List<IMyBatteryBlock>();
 readonly List<IMyGasTank> h2 = new List<IMyGasTank>();
+public List<IMyGasTank> Tanks { get { return h2; } }
 readonly List<IMyTerminalBlock> inv = new List<IMyTerminalBlock>();
 readonly List<IMyTerminalBlock> guns = new List<IMyTerminalBlock>();
 readonly List<IMyTerminalBlock> all = new List<IMyTerminalBlock>();

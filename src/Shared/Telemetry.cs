@@ -5,6 +5,7 @@ class Telemetry
 {
     public readonly List<IMyBatteryBlock> Bats = new List<IMyBatteryBlock>();
     readonly List<IMyGasTank> h2 = new List<IMyGasTank>();
+    public List<IMyGasTank> Tanks { get { return h2; } }   // hydrogen tanks (refilled when docked at a base)
     readonly List<IMyTerminalBlock> inv = new List<IMyTerminalBlock>();
     readonly List<IMyTerminalBlock> guns = new List<IMyTerminalBlock>();
     readonly List<IMyTerminalBlock> all = new List<IMyTerminalBlock>();

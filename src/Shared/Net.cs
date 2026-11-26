@@ -10,7 +10,8 @@ class Net
 {
     public readonly IMyIntergridCommunicationSystem IGC;
     public int NetId, KeyHash;
-    public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "";
+    public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "", TCon = "", TDes = "",
+                  THaul = "", TVis = "", TVReq = "";
 
     public Net(IMyIntergridCommunicationSystem igc) { IGC = igc; }
 
@@ -21,6 +22,7 @@ class Net
         string p = "FS" + netId + "/";
         TNav = p + "nav"; THello = p + "hello"; TSts = p + "sts"; TOrd = p + "ord";
         TCmd = p + "cmd"; TSnap = p + "snap"; TFac = p + "fac"; TFacSt = p + "facst"; TCon = p + "con"; TDes = p + "des";
+        THaul = p + "haul"; TVis = p + "vis"; TVReq = p + "vreq";
     }
 
     MyTuple<int, int, int, int, long> Hdr(int type, long seq)
@@ -159,6 +161,57 @@ class Net
         if (!Ok(d.Item1, Proto.M_DES)) return false;
         id = d.Item2.Item1; size = d.Item2.Item2; pos = d.Item3.Item1; vel = d.Item3.Item2;
         if (id == 0) id = -2;   // anonymous designation: one shared slot
+        return true;
+    }
+
+    // ---------------- HAUL (carrier -> depots, broadcast): (position, m3 waiting, kg waiting, carrier name) ----------------
+    public void SendHaul(Vector3D pos, double m3, double kg, string name)
+    {
+        IGC.SendBroadcastMessage(THaul, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>(
+            Hdr(Proto.M_HAUL, 0), new MyTuple<Vector3D, double, double, string>(pos, m3, kg, name ?? "")));
+    }
+
+    public bool ReadHaul(MyIGCMessage m, out Vector3D pos, out double m3, out double kg, out string name)
+    {
+        pos = Vector3D.Zero; m3 = kg = 0; name = "";
+        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>)) return false;
+        var h = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<Vector3D, double, double, string>>)m.Data;
+        if (!Ok(h.Item1, Proto.M_HAUL)) return false;
+        pos = h.Item2.Item1; m3 = h.Item2.Item2; kg = h.Item2.Item3; name = h.Item2.Item4;
+        return true;
+    }
+
+    // ---------------- VISIT (carrier -> visiting hauler, unicast): (code, a, b, c, id) ----------------
+    public bool SendVisit(long to, int code, Vector3D a, Vector3D b, Vector3D c, long id)
+    {
+        return IGC.SendUnicastMessage(to, TVis, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>(
+            Hdr(Proto.M_VIS, 0), new MyTuple<int, Vector3D, Vector3D, Vector3D, long>(code, a, b, c, id)));
+    }
+
+    public bool ReadVisit(MyIGCMessage m, out int code, out Vector3D a, out Vector3D b, out Vector3D c, out long id)
+    {
+        code = 0; a = b = c = Vector3D.Zero; id = 0;
+        if (m.Tag != TVis || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>)) return false;
+        var v = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, Vector3D, Vector3D, Vector3D, long>>)m.Data;
+        if (!Ok(v.Item1, Proto.M_VIS)) return false;
+        code = v.Item2.Item1; a = v.Item2.Item2; b = v.Item2.Item3; c = v.Item2.Item4; id = v.Item2.Item5;
+        return true;
+    }
+
+    // ---------------- VISIT REQUEST (hauler -> carrier, unicast): (code, kg it can still lift) ----------------
+    public bool SendVReq(long to, int code, double kg)
+    {
+        return IGC.SendUnicastMessage(to, TVReq, new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>(
+            Hdr(Proto.M_VREQ, 0), new MyTuple<int, double>(code, kg)));
+    }
+
+    public bool ReadVReq(MyIGCMessage m, out int code, out double kg)
+    {
+        code = 0; kg = 0;
+        if (m.Tag != TVReq || !(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>)) return false;
+        var v = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<int, double>>)m.Data;
+        if (!Ok(v.Item1, Proto.M_VREQ)) return false;
+        code = v.Item2.Item1; kg = v.Item2.Item2;
         return true;
     }
 }

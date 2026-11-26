@@ -9,6 +9,8 @@
 //   name contains [Fleet UI]     -> Hub UI
 //   name contains [Fleet Drone]  -> Drone
 //   name contains [Fleet Factory]-> Factory
+//   name contains [Mine Core]    -> Mine Core (mining carrier)
+//   name contains [Fleet Depot]  -> Depot (base dispatcher for haulers)
 //   or the block already runs a Fleet System script -> updated to the latest
 //
 // Also installs the ship blueprints in ..\blueprints into Blueprints\local (your
@@ -31,9 +33,9 @@ using System.Xml;
 public static class FleetPatch
 {
     const string XsiNs = "http://www.w3.org/2001/XMLSchema-instance";
-    static readonly string[] Kinds = { "HubCore", "HubUI", "Drone", "Factory" };
-    static readonly string[] Tags = { "[Fleet Core]", "[Fleet UI]", "[Fleet Drone]", "[Fleet Factory]" };
-    static readonly Regex Header = new Regex(@"FLEET SYSTEM (\S+) \S+ (HubCore|HubUI|Drone|Factory)\b");
+    static readonly string[] Kinds = { "HubCore", "HubUI", "Drone", "Factory", "MineCore", "Depot" };
+    static readonly string[] Tags = { "[Fleet Core]", "[Fleet UI]", "[Fleet Drone]", "[Fleet Factory]", "[Mine Core]", "[Fleet Depot]" };
+    static readonly Regex Header = new Regex(@"FLEET SYSTEM (\S+) \S+ (HubCore|HubUI|Drone|Factory|MineCore|Depot)\b");
 
     class Hit { public string Block; public string Kind; public string Change; }
     class Plan { public string Path; public string Label; public List<Hit> Hits = new List<Hit>(); }
@@ -118,6 +120,8 @@ public static class FleetPatch
             Console.WriteLine("   hub screen PB  ->  include [Fleet UI]");
             Console.WriteLine("   drone PB       ->  include [Fleet Drone]");
             Console.WriteLine("   factory PB     ->  include [Fleet Factory]");
+            Console.WriteLine("   mining carrier ->  include [Mine Core]");
+            Console.WriteLine("   base depot PB  ->  include [Fleet Depot]");
             Console.WriteLine("then save, exit the game and run the installer again.");
             return 0;
         }
@@ -341,7 +345,7 @@ public static class FleetPatch
     }
 
     // ------------------------------------------------------------------ core
-    static string Short(string kind) { return kind == "HubCore" ? "Core" : kind == "HubUI" ? "UI" : kind == "Factory" ? "Factory" : "Drone"; }
+    static string Short(string kind) { return kind == "HubCore" ? "Core" : kind == "HubUI" ? "UI" : kind == "Factory" ? "Factory" : kind == "MineCore" ? "Mine" : kind == "Depot" ? "Depot" : "Drone"; }
 
     static string KindOf(string name, string program)
     {

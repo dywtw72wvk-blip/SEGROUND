@@ -5,7 +5,7 @@ A multi-drone fleet for Space Engineers programmable blocks. One hub script runs
 - `dist/` holds the paste-ready scripts: `HubCore.cs`, `HubUI.cs` and `Drone.cs`.
 - `docs/SETUP.md` covers in-game setup, commands and the phase 1 acceptance test.
 - `docs/SHIPS.md` covers the ready-made atmospheric ships: **FS Carrier Atmo + 8 Busters + Spotter** (the whole fleet in one paste), plus the carrier, the Buster and the spotter on their own. `install.bat` puts them in your F10 blueprint list after checking them against your game files.
-- `docs/MINING.md` is the design for FS Mining: a carrier for 4 vertical atmospheric miners. So far: the **FS Mining Carrier Atmo** blueprint, and `tools/minefleet.py` for a local one-paste version with 4 SCAM miners docked.
+- `docs/MINING.md` is the design for FS Mining: a carrier for 4 vertical atmospheric miners. Built so far: the **FS Mining Carrier Atmo** blueprint with its **Mine Core** script, the Miner and Hauler roles in the Drone script, the base **Depot** dispatcher (`[Fleet Depot]`), `tools/minefleet.py` (one-paste carrier with 4 SCAM miners) and `tools/haulerfit.py` (the ALZ Hezen fitted as a hauler). Both tools write to your F10 list only; the workshop ships never enter this repo.
 - `docs/ARCHITECTURE.md` is the design and roadmap. Phase 2 (done) adds Buster defense drones: alert levels, an automatic screen, charge rotation, patrols and a tactical map.
 - `src/` holds the source fragments. `tools/build.py` assembles them (`--check` compile-checks against `tools/stubs`).
 

@@ -11,10 +11,10 @@ FS Carrier Atmo: 601 blocks, 617.1 t, 27.5 x 30.0 x 70.0 m (W x H x L)
   accel m/s^2: Up 26.5, Forward 9.5, Backward 9.5, Left 2.8, Right 2.8, Down 0.0
   centre of mass (cells): x 4.02  y 2.58  z 11.47
   lift TWR at 1 g, sea level: 2.21
-FS Mining Carrier Atmo: 618 blocks, 1116.9 t, 42.5 x 35.0 x 70.0 m (W x H x L)
-  lift TWR at 1 g, sea level: 6.39
-  accel m/s^2: Up 62.7, Forward 10.4, Backward 10.4, Left 1.6, Right 1.6, Down 0.0
-  centre of mass (cells): x 5.02  y 2.30  z 9.51
-  lift TWR at 1 g, sea level: 5.58
-  hold: 2 x 421.875 m3; full hold and 4 full miners: 3893 t, lift TWR 1.83
+FS Mining Carrier Atmo: 628 blocks, 1126.4 t, 57.5 x 35.0 x 70.0 m (W x H x L)
+  lift TWR at 1 g, sea level: 6.33
+  accel m/s^2: Up 62.1, Forward 10.4, Backward 10.4, Left 1.6, Right 1.6, Down 0.0
+  centre of mass (cells): x 5.07  y 2.32  z 9.48
+  lift TWR at 1 g, sea level: 5.54
+  hold: 2 x 421.875 m3; full hold and 4 full miners: 3903 t, lift TWR 1.83
 FS Carrier Atmo + 8 Busters + Spotter: carrier + 8 docked Busters + spotter on the bow (connector faces 0.05 m apart, clearance checked)

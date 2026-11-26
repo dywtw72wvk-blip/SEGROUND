@@ -13,6 +13,11 @@
 // the shaft reaches the depth the hub asked for (or MaxDepth below the surface), or a stretch of
 // shaft past the deposit gives no ore; then climbs out and reports F_FULL / F_DONE and waits for
 // the hub (a pad, or the next shaft). Stone goes out through connectors tagged [Eject].
+// Hauler role (PB or grid named "Hauler", or Role=Hauler): O_HAUL from the base's Depot sends it to a
+// mining carrier. It flies there, asks the carrier for its [Haul] port (saying how much it can still
+// lift at HaulTWR), docks by the carrier's own frame broadcast, keeps its thrusters on while docked so
+// the carrier doesn't carry it, is loaded, leaves, and reports F_FULL (or F_DONE if it got nothing);
+// the Depot then docks it at home, where its tanks refill.
 // Arguments: provision | reset | stop | rescan
 // ============================================================================
 const string SEC = "Drone";
@@ -65,6 +70,10 @@ Vector3D atkAz;                                   // attack: chosen approach azi
 // miner: shaft progress along the axis (z = height of the drill tips above the order's axis point)
 double zCmd, zTop, zCheck, oreCheck, oreVol, nextOre, mineT;
 bool mineFull, mineDone, mineHome, boring;
+// hauler: the carrier being visited (its address), its frame broadcast, port request timing
+long carAddr; bool visiting;
+readonly HubFrame car = new HubFrame();
+double carNavT = -1e9, visReqT, haulTwr, haulStand;
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
 bool registered, controlling, arrived, combatOn, leashBreak;
 long hubAddr;
@@ -95,7 +104,7 @@ public void Save()
     ini.Set("s", "reg", registered); ini.Set("s", "hub", hubAddr); ini.Set("s", "call", call);
     ini.Set("s", "task", task); ini.Set("s", "tId", tId); ini.Set("s", "pTask", pTask); ini.Set("s", "pId", pId);
     ini.Set("s", "epoch", epoch); ini.Set("s", "lastN", lastN); ini.Set("s", "ack", ack);
-    ini.Set("s", "base", tel.Baseline); ini.Set("s", "uLocal", uLocal);
+    ini.Set("s", "base", tel.Baseline); ini.Set("s", "uLocal", uLocal); ini.Set("s", "car", carAddr);
     SetV(ini, "tA", tA); SetV(ini, "tB", tB); SetV(ini, "tC", tC);
     SetV(ini, "pA", pA); SetV(ini, "pB", pB); SetV(ini, "pC", pC);
     SetV(ini, "hold", holdPos); SetV(ini, "hf", holdFwd); SetV(ini, "hu", holdUp);
@@ -111,7 +120,7 @@ void Load()
     task = ini.Get("s", "task").ToInt32(); tId = ini.Get("s", "tId").ToInt64();
     pTask = ini.Get("s", "pTask").ToInt32(); pId = ini.Get("s", "pId").ToInt64();
     epoch = ini.Get("s", "epoch").ToInt64(-1); lastN = ini.Get("s", "lastN").ToInt64(-1); ack = ini.Get("s", "ack").ToInt64();
-    tel.Baseline = Math.Max(tel.Baseline, ini.Get("s", "base").ToInt32()); uLocal = ini.Get("s", "uLocal").ToBoolean();
+    tel.Baseline = Math.Max(tel.Baseline, ini.Get("s", "base").ToInt32()); uLocal = ini.Get("s", "uLocal").ToBoolean(); carAddr = ini.Get("s", "car").ToInt64();
     tA = GetV(ini, "tA"); tB = GetV(ini, "tB"); tC = GetV(ini, "tC");
     pA = GetV(ini, "pA"); pB = GetV(ini, "pB"); pC = GetV(ini, "pC");
     holdPos = GetV(ini, "hold"); holdFwd = GetV(ini, "hf"); holdUp = GetV(ini, "hu");
@@ -130,18 +139,21 @@ void LoadConfig()
     bool spot = Me.CustomName.Contains("Spotter") || Me.CubeGrid.CustomName.Contains("Spotter");
     drills.Clear(); GridTerminalSystem.GetBlocksOfType(drills, b => b.IsSameConstructAs(Me));
     bool miner = drills.Count > 0 || Me.CustomName.Contains("Miner");
-    role = cfg.S("Role", spot ? "Spotter" : miner ? "Miner" : "Buster");
+    bool haul = Me.CustomName.Contains("Hauler") || Me.CubeGrid.CustomName.Contains("Hauler");
+    role = cfg.S("Role", spot ? "Spotter" : haul ? "Hauler" : miner ? "Miner" : "Buster");
     boreSpeed = cfg.D("BoreSpeed", 0.8);              // miner: descent rate with the drills cutting (m/s)
     fullAt = cfg.D("FullAt", 0.92);                  // miner: cargo fill that ends a trip
     mineBatt = cfg.D("MineReserve", 0.35);           // miner: battery that ends a trip (climb out, go home)
     noOreRun = cfg.D("NoOreRun", 6);                 // miner: metres of shaft past the deposit with no ore = done
     perfMode = cfg.S("Perf", "Normal").ToUpper();
-    maxSpeed = cfg.D("MaxSpeed", miner ? 40 : 100);
+    maxSpeed = cfg.D("MaxSpeed", miner ? 40 : haul ? 80 : 100);
     dockSpeed = cfg.D("DockSpeed", 1.5);
     approach = cfg.D("ApproachDistance", 25);
     clearance = cfg.D("Clearance", 15);
     reconSpeed = cfg.D("ReconSpeed", spot ? 35 : 60); // search: cruise speed while sweeping
-    minAlt = cfg.D("MinAltitude", miner ? 25 : 150);              // keep at least this far above the surface on S&D
+    minAlt = cfg.D("MinAltitude", miner ? 25 : haul ? 60 : 150);
+    haulTwr = Math.Max(1.05, cfg.D("HaulTWR", 1.25)); // hauler: lift / weight it keeps with its load (sets what the carrier loads)
+    haulStand = cfg.D("HaulStandoff", 150);          // hauler: waits this far beside a carrier for its port              // keep at least this far above the surface on S&D
     standoff = cfg.D("RingDistance", 2800);          // death ring distance from the target (hub sends its own)
     cone = cfg.D("RingCone", 20);                    // ring angle off vertical over the target (degrees)
     ringRate = cfg.D("RingRate", 2);                 // ring rotation (degrees per second)
@@ -203,7 +215,7 @@ void Scan()
         var c = b as IMyShipController;
         if (c != null)
         {
-            if (ctlTag.Length > 0 ? b.CustomName.Contains(ctlTag) : c is IMyRemoteControl) ctl = c;
+            if (ctlTag.Length > 0 ? b.CustomName.Contains(ctlTag) : (b.CustomName.Contains("[Fleet]") || (c is IMyRemoteControl && (ctl == null || !ctl.CustomName.Contains("[Fleet]"))))) ctl = c;
             if (anyCtl == null) anyCtl = c;
             continue;
         }
@@ -218,8 +230,9 @@ void Scan()
     // "see" the hub's blocks as its own. Stay passive until the merge block releases it.
     inFactory = false;
     foreach (var b in blocks) if (b != Me && b is IMyProgrammableBlock && (b.CustomData.Contains("[Hub]") || b.CustomData.Contains("[Factory]"))) { inFactory = true; break; }
-    if (ctl != null) thr.RemoveAll(t => t.CubeGrid != ctl.CubeGrid);
-    foreach (var k in conns) if (connTag.Length == 0 || k.CustomName.Contains(connTag)) { conn = k; break; }
+    if (ctl != null) { thr.RemoveAll(t => t.CubeGrid != ctl.CubeGrid); gyr.RemoveAll(g => g.CubeGrid != ctl.CubeGrid); }
+    foreach (var k in conns) if (connTag.Length > 0 ? k.CustomName.Contains(connTag) : k.CustomName.Contains("[Dock]")) { conn = k; break; }
+    if (conn == null && connTag.Length == 0 && conns.Count > 0) conn = conns[0];
 
     tel.Bind(blocks);
     if (ctl != null) fl.Bind(ctl, thr, gyr);
@@ -254,6 +267,7 @@ void Resume()
         case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
         case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
         case Proto.O_MINE: StartMine(); break;
+        case Proto.O_HAUL: visiting = true; Enter(Proto.S_TRANSIT); break;   // ask the carrier for a port again
         case Proto.O_UNDOCK:
             if (pTask != Proto.O_NONE) Enter(Proto.S_UNDOCKING);
             else { CaptureHold(); Enter(Proto.S_HOLD); }
@@ -337,6 +351,7 @@ void Receive()
     while (navL.HasPendingMessage)
     {
         var m = navL.AcceptMessage();
+        if (visiting && m.Source == carAddr) { if (net.ReadNav(m, car)) { car.T = T; carNavT = T; } continue; }
         if (!registered || m.Source != hubAddr) continue;
         if (net.ReadNav(m, hub)) { hub.T = T; navT = T; }
     }
@@ -344,7 +359,11 @@ void Receive()
     {
         var m = uni.AcceptMessage();
         long seq; int code; Vector3D a, b, c; long id; string text;
-        if (!net.ReadOrder(m, out seq, out code, out a, out b, out c, out id, out text)) continue;
+        if (!net.ReadOrder(m, out seq, out code, out a, out b, out c, out id, out text))
+        {
+            if (visiting && m.Source == carAddr && net.ReadVisit(m, out code, out a, out b, out c, out id)) OnVisit(code, a, b, c, id);
+            continue;
+        }
         if (code == Proto.O_REGISTER)
         {
             // Only switch hubs if we have no live link to the current one
@@ -384,6 +403,7 @@ void SendStatus()
 void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
     bool connected = Connected();
+    if (code == Proto.O_HAUL && visiting && id == carAddr) return;
     if (state == Proto.S_BORE || state == Proto.S_ASCEND)
     {
         if (code == Proto.O_MINE && (a - tA).LengthSquared() < 0.01) { Store(code, a, b, c, id); return; }   // same shaft, resent
@@ -399,6 +419,7 @@ void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
         case Proto.O_LOITER:
         case Proto.O_INTERCEPT:
         case Proto.O_MINE:
+        case Proto.O_HAUL:
             if (connected) { task = code; SetPending(code, a, b, c, id); BeginUndock(); }
             else if (state == Proto.S_UNDOCKING) { task = code; SetPending(code, a, b, c, id); }
             else Execute(code, a, b, c, id);
@@ -435,6 +456,8 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
     Store(code, a, b, c, id);
     mineFull = mineDone = mineHome = false;
+    visiting = code == Proto.O_HAUL;
+    if (visiting) carAddr = id;
     arrived = false;
     switch (code)
     {
@@ -461,6 +484,7 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
             if (state != Proto.S_INTERCEPT) { handed = false; Enter(Proto.S_INTERCEPT); }
             break;
         case Proto.O_MINE: StartMine(); break;
+        case Proto.O_HAUL: visReqT = 0; Enter(Proto.S_TRANSIT); break;
     }
 }
 
@@ -489,8 +513,8 @@ void BeginUndock()
     if (oc != null) { uF = oc.WorldMatrix.Forward; uP = oc.GetPosition(); }
     else if (conn != null) { uF = -conn.WorldMatrix.Forward; uP = conn.GetPosition(); }
     else { uF = -ctl.WorldMatrix.Forward; uP = fl.Pos; }
-    uLocal = NavFresh();
-    if (uLocal) { MatrixD m = hub.Matrix(T); uP = HubFrame.ToLocal(m, uP); uF = HubFrame.DirToLocal(m, uF); }
+    uLocal = DFresh();
+    if (uLocal) { MatrixD m = DF().Matrix(T); uP = HubFrame.ToLocal(m, uP); uF = HubFrame.DirToLocal(m, uF); }
     DockedPower(false);
     if (conn != null) conn.Disconnect();
     Enter(Proto.S_UNDOCKING);
@@ -504,7 +528,7 @@ void Enter(int s)
                   s == Proto.S_LOITER || s == Proto.S_INTERCEPT || s == Proto.S_TRANSIT || s == Proto.S_BORE || s == Proto.S_ASCEND;
     bool station = s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_ENGAGED;
     if (!station) { leashBreak = false; if (combatOn) SetCombat(false); }
-    if (s == Proto.S_DOCKED) { fl.Release(true); DockedPower(true); controlling = false; }
+    if (s == Proto.S_DOCKED) { fl.Release(true); if (!visiting) DockedPower(true); controlling = false; }
     else if (s == Proto.S_ENGAGED) { if (controlling) fl.Release(true); controlling = false; }   // vanilla AI flies
     else if (!flying) { if (controlling) fl.Release(true); controlling = false; }
     else if (!controlling) { fl.Engage(); controlling = true; }
@@ -517,7 +541,7 @@ void Enter(int s)
 
 void Step()
 {
-    bool fresh = NavFresh();
+    bool fresh = DFresh();
     switch (state)
     {
         case Proto.S_IDLE:
@@ -547,6 +571,7 @@ void Step()
             break;
         case Proto.S_DOCKED:
             // a jolt can drop the lock without us leaving the port: re-lock instead of flying off
+            if (visiting && T - stateT > 900) { BeginUndock(); break; }   // carrier never said loaded: leave
             if (conn != null && conn.Status == MyShipConnectorStatus.Connectable) conn.Connect();
             else if (!Connected()) { DockedPower(false); CaptureHold(); Enter(Proto.S_HOLD); }
             break;
@@ -566,6 +591,8 @@ void Step()
             FlyIntercept();
             break;
         case Proto.S_TRANSIT:
+            if (visiting) FlyHaul(); else FlyMine();
+            break;
         case Proto.S_BORE:
         case Proto.S_ASCEND:
             FlyMine();
@@ -865,13 +892,15 @@ void DockFrame(MatrixD m, out Vector3D P, out Vector3D F, out Vector3D U)
 void FlyApproach()
 {
     if (conn == null) { CaptureHold(); Enter(Proto.S_HOLD); return; }
-    MatrixD m = hub.Matrix(T);
+    MatrixD m = DF().Matrix(T);
     Vector3D P, F, U; DockFrame(m, out P, out F, out U);
     Vector3D A = P + F * approach;
     Vector3D cp = conn.GetPosition();
     Vector3D off = cp - fl.Pos;
-    Vector3D tv = hub.VelAt(A, m);
-    fl.FlyTo(Avoid(A - off, m), tv, maxSpeed);
+    Vector3D tv = DF().VelAt(A, m);
+    Vector3D dest = Avoid(A - off, m);
+    if ((A - cp).Length() > 300) dest = Lift(dest);   // far out: keep MinAltitude over the ground
+    fl.FlyTo(dest, tv, maxSpeed);
     fl.Aim(conn.WorldMatrix, -F, U);
 
     double posErr = (cp - A).Length();
@@ -881,7 +910,7 @@ void FlyApproach()
 
 void FlyFinal()
 {
-    MatrixD m = hub.Matrix(T);
+    MatrixD m = DF().Matrix(T);
     Vector3D P, F, U; DockFrame(m, out P, out F, out U);
     Vector3D cp = conn.GetPosition();
     Vector3D rel = cp - P;
@@ -892,7 +921,7 @@ void FlyFinal()
     if (conn.Status == MyShipConnectorStatus.Connectable) conn.Connect();
     if (conn.Status == MyShipConnectorStatus.Connected) { Enter(Proto.S_DOCKED); return; }
 
-    fl.FlyTo(P - (cp - fl.Pos), hub.VelAt(P, m), dockSpeed);
+    fl.FlyTo(P - (cp - fl.Pos), DF().VelAt(P, m), dockSpeed);
     fl.Aim(conn.WorldMatrix, -F, U);
 }
 
@@ -901,8 +930,8 @@ void FlyUndock()
     Vector3D P, F, tv;
     if (uLocal)
     {
-        MatrixD m = hub.Matrix(T);
-        P = HubFrame.ToWorld(m, uP); F = Util.Norm(HubFrame.DirToWorld(m, uF)); tv = hub.VelAt(P, m);
+        MatrixD m = DF().Matrix(T);
+        P = HubFrame.ToWorld(m, uP); F = Util.Norm(HubFrame.DirToWorld(m, uF)); tv = DF().VelAt(P, m);
     }
     else { P = uP; F = Util.Norm(uF); tv = Vector3D.Zero; }
 
@@ -918,6 +947,7 @@ void FlyUndock()
             int c = pTask; pTask = Proto.O_NONE;
             Execute(c, pA, pB, pC, pId);
         }
+        else if (visiting) LeaveCarrier();
         else StationHere();
     }
 }
@@ -927,8 +957,9 @@ void FlyUndock()
 // shape: abreast drones simply drift past a stopping carrier and creep back to their slots.
 Vector3D Avoid(Vector3D tgt, MatrixD m)
 {
-    if (!hub.Valid || hub.BoxH.LengthSquared() < 1) return tgt;
-    Vector3D h = hub.BoxH + new Vector3D(clearance), bc = hub.BoxC;
+    var hf = DF();
+    if (!hf.Valid || hf.BoxH.LengthSquared() < 1) return tgt;
+    Vector3D h = hf.BoxH + new Vector3D(clearance), bc = hf.BoxC;
     Vector3D p = HubFrame.ToLocal(m, fl.Pos) - bc, t = HubFrame.ToLocal(m, tgt) - bc;
     if (InBox(p, h))
     {
@@ -969,6 +1000,55 @@ static bool SegHits(Vector3D p, Vector3D t, Vector3D h)
         if (t0 > t1) return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------- hauling
+// the frame docking follows: the visited carrier's while hauling, the hub's otherwise
+HubFrame DF() { return visiting ? car : hub; }
+bool DFresh() { return visiting ? T - carNavT < linkTimeout : NavFresh(); }
+
+// kg we could still lift and keep HaulTWR (what the carrier may load); no gravity: no limit
+double Payload()
+{
+    double g = fl.Grav.Length();
+    if (g < 0.1) return 1e9;
+    return Math.Max(0, fl.AccelAlong(-fl.Grav / g) * fl.Mass / (g * haulTwr) - fl.Mass);
+}
+
+// O_HAUL: tA = where the carrier was, carAddr = the carrier. Hold off to its side, HaulStandoff out
+// and 40 m up, and ask for a port every 3 s once its frame broadcast is heard.
+void FlyHaul()
+{
+    bool cf = T - carNavT < linkTimeout;
+    Vector3D cp = cf ? car.Pos : tA, u = UpRef(ctl.WorldMatrix.Up);
+    Vector3D off = fl.Pos - cp;
+    off -= u * Vector3D.Dot(off, u);
+    Vector3D side = off.LengthSquared() > 1 ? Util.Norm(off) : Util.Perp(u);
+    Vector3D dest = Lift(cp + side * haulStand + u * 40);
+    fl.FlyTo(cf ? Avoid(dest, car.Matrix(T)) : dest, cf ? car.Vel : Vector3D.Zero, maxSpeed);
+    Vector3D h = cp - fl.Pos;
+    h -= u * Vector3D.Dot(h, u);
+    if (h.LengthSquared() > 100) holdFwd = Util.Norm(h);
+    fl.Aim(ctl.WorldMatrix, holdFwd, u);
+    if (cf && (fl.Pos - cp).Length() < haulStand + 400 && T >= visReqT) { net.SendVReq(carAddr, Proto.R_DOCK, Payload()); visReqT = T + 3; }
+    if (T - stateT > 900) LeaveCarrier();   // no port in 15 min: give up
+}
+
+// the carrier: here is your port / wait / loaded, leave / nothing to haul
+void OnVisit(int code, Vector3D a, Vector3D b, Vector3D c, long id)
+{
+    if (code == Proto.V_DOCK && state == Proto.S_TRANSIT) { tA = a; tB = b; tC = c; tId = id; Enter(Proto.S_APPROACH); }
+    else if (code == Proto.V_NONE && state == Proto.S_TRANSIT) LeaveCarrier();
+    else if (code == Proto.V_LOADED && state == Proto.S_DOCKED && visiting) BeginUndock();
+}
+
+// done with the carrier: tell it, then wait beside it for the Depot (F_FULL with ore, F_DONE without)
+void LeaveCarrier()
+{
+    net.SendVReq(carAddr, Proto.R_LEFT, 0);
+    visiting = false;
+    if (tel.Cargo > 0.02) mineFull = true; else mineDone = true;
+    CaptureHold(); Enter(Proto.S_HOLD);
 }
 
 // ---------------------------------------------------------------- mining
@@ -1094,6 +1174,7 @@ bool NavFresh() { return hub.Valid && T - navT < linkTimeout; }
 void DockedPower(bool docked)
 {
     fl.SetPower(!docked);
+    foreach (var t in tel.Tanks) if (!t.Closed && t.Stockpile != docked) t.Stockpile = docked;
     foreach (var b in tel.Bats)
     {
         if (!docked && !b.Enabled) b.Enabled = true;   // hub may have parked them during power-limited charging
