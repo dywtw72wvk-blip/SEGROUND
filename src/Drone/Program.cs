@@ -34,7 +34,7 @@ int netId;
 string key = "", role = "Buster", perfMode = "NORMAL", connTag = "", ctlTag = "";
 string engageMode = "STATION", combatTag = "[Combat]", engTag = "[Engage]", disTag = "[Disengage]";
 double maxSpeed, dockSpeed, approach, rtbBatt, linkTimeout, clearance;
-bool provisioned, combatIdleOff = true;
+bool provisioned, combatIdleOff = true, inFactory;
 
 // --- runtime state
 double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince;
@@ -156,6 +156,10 @@ void Scan()
         var a = b as IMyRadioAntenna; if (a != null && (ant == null || a.IsWorking)) ant = a;
     }
     if (ctl == null) ctl = anyCtl;
+    // Freshly welded in a factory bay, the drone is merged into the hub's grid and would
+    // "see" the hub's blocks as its own. Stay passive until the merge block releases it.
+    inFactory = false;
+    foreach (var b in blocks) if (b != Me && b is IMyProgrammableBlock && (b.CustomData.Contains("[Hub]") || b.CustomData.Contains("[Factory]"))) { inFactory = true; break; }
     if (ctl != null) thr.RemoveAll(t => t.CubeGrid != ctl.CubeGrid);
     foreach (var k in conns) if (connTag.Length == 0 || k.CustomName.Contains(connTag)) { conn = k; break; }
 
@@ -226,6 +230,14 @@ void Command(string a)
 void Tick()
 {
     if (T >= nextScan) { Scan(); nextScan = T + 10; }
+    if (inFactory)
+    {
+        if (controlling && ctl != null) fl.Release(true);
+        controlling = false; state = Proto.S_BOOT;
+        if (T >= nextEcho) { BuildEcho(); nextEcho = T + 1; }
+        nextScan = Math.Min(nextScan, T + 2);       // rescan often so release is noticed quickly
+        return;
+    }
     if (ctl == null || thr.Count == 0 || gyr.Count == 0 || !provisioned)
     {
         if (controlling && ctl != null) fl.Release(true);
@@ -296,7 +308,7 @@ void SendStatus()
     if (combatOn) f |= Proto.F_ENGAGED;
     if (!docked) foreach (var t in turrets) if (!t.Closed && t.IsWorking && t.HasTarget) { f |= Proto.F_CONTACT; break; }
     long dockId = docked && conn.OtherConnector != null ? conn.OtherConnector.EntityId : 0;
-    net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt, tel.H2, tel.Cargo, tel.Integ, f);
+    net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt, tel.H2, tel.Cargo, tel.Integ, tel.Ammo, f);
 }
 
 // ---------------------------------------------------------------- orders
@@ -621,6 +633,7 @@ void DockedPower(bool docked)
     fl.SetPower(!docked);
     foreach (var b in tel.Bats)
     {
+        if (!docked && !b.Enabled) b.Enabled = true;   // hub may have parked them during power-limited charging
         var mode = docked ? ChargeMode.Recharge : ChargeMode.Auto;
         if (b.ChargeMode != mode) b.ChargeMode = mode;
     }
@@ -639,6 +652,7 @@ void BuildEcho()
 {
     var sb = new StringBuilder();
     sb.Append("FLEET DRONE  ").Append(call.Length > 0 ? call : Me.CubeGrid.CustomName).Append("  [").Append(role).Append("]\n");
+    if (inFactory) sb.Append("IN FACTORY BAY: waiting for release\n");
     sb.Append("State: ").Append(Proto.StateName(state)).Append("   Order: ").Append(Proto.OrderName(task)).Append('\n');
     if (!provisioned) sb.Append("NOT PROVISIONED\nDock to a hub (auto-provision) or set\nNetId + Key in Custom Data, then run 'provision'.\n");
     else sb.Append("Net ").Append(netId).Append("   Hub: ").Append(registered ? (NavFresh() ? "linked" : "NO SIGNAL") : "searching...").Append('\n');

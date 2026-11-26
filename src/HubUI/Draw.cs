@@ -99,6 +99,15 @@ void DrawFleet(IMyTextSurface s)
         : "NO LINK TO HUB CORE";
     Txt(ref f, info, x0 + 10 * k, y0 + 38 * k, 0.5f * k, linked ? C_TXT : C_BAD);
 
+    if (linked && hJump != Proto.JUMP_NONE)
+    {
+        bool ready = hJump == Proto.JUMP_READY;
+        int docked = 0; foreach (var r in rows) if (r.LostS < 0 && r.State == Proto.S_DOCKED) docked++;
+        int live = 0; foreach (var r in rows) if (r.LostS < 0) live++;
+        Box(ref f, x0 + W * 0.25f, y0 + 66 * k, W * 0.5f, 22 * k, ready ? C_GOOD : C_WARN);
+        Txt(ref f, ready ? "JUMP READY" : "JUMP PREP  " + docked + "/" + live + " docked", x0 + W / 2, y0 + 68 * k, 0.5f * k, C_BG, TextAlignment.CENTER);
+    }
+
     // ---------------- column headings
     float[] cx = { x0 + 0.04f * W, x0 + 0.30f * W, x0 + 0.47f * W, x0 + 0.63f * W, x0 + 0.80f * W, x0 + 0.97f * W };
     float colY = y0 + 72 * k, hs = 0.4f * k;
@@ -158,7 +167,7 @@ void DrawFleet(IMyTextSurface s)
     else
     {
         var r = rows[cur - 1];
-        Txt(ref f, r.Call + " [" + r.Role + "]   BATT " + Util.PctM(r.Batt) + "  H2 " + Util.PctM(r.H2) + "  CARGO " + Util.PctM(r.Cargo) + "  HULL " + Util.PctM(r.Integ),
+        Txt(ref f, r.Call + " [" + r.Role + "]   BATT " + Util.PctM(r.Batt) + "  AMMO " + Util.PctM(r.Ammo) + "  HULL " + Util.PctM(r.Integ) + "  H2 " + Util.PctM(r.H2),
             x0 + 10 * k, py + 8 * k, ds, C_TXT);
         string ackTxt = r.Unresp ? "NOT ACKNOWLEDGING" : r.Acked ? "order acknowledged" : "awaiting ack";
         string flags = ((r.Flags & Proto.F_WANT_RTB) != 0 ? "  LOW POWER" : "") + ((r.Flags & Proto.F_NO_THRUST) != 0 ? "  NO THRUST" : "");
@@ -260,5 +269,88 @@ void DrawMap(IMyTextSurface s)
 
     Txt(ref f, "OUT " + outN + "   ENGAGED " + engaged + "   DOCKED " + docked + "   LOST " + lost + "   DEF " + (hDefense ? "ON" : "OFF"),
         x0 + 12 * k, y0 + H - 30 * k, 0.45f * k, C_TXT);
+    f.Dispose();
+}
+
+// ============================================================================
+// Hangar: docks, factory, repair/rearm/charging, jump interlock
+// ============================================================================
+void DrawHangar(IMyTextSurface s)
+{
+    Prepare(s);
+    Vector2 sz = s.SurfaceSize;
+    Vector2 o = (s.TextureSize - sz) / 2f;
+    float W = sz.X, H = sz.Y, k = Math.Min(W, H) / 512f;
+    float x0 = o.X, y0 = o.Y;
+    bool linked = Linked();
+
+    var f = s.DrawFrame();
+    if (flip) f.Add(new MySprite());
+    Box(ref f, x0, y0, W, H, C_BG);
+    Box(ref f, x0, y0, W, 44 * k, C_PANEL);
+    Box(ref f, x0, y0 + 42 * k, W, 2 * k, C_ACC);
+    Txt(ref f, "HANGAR", x0 + 10 * k, y0 + 7 * k, 0.8f * k, C_ACC);
+    if (linked) AlertBadge(ref f, x0 + W - 8 * k, y0 + 10 * k, k);
+    if (!linked) { Txt(ref f, "NO LINK TO HUB CORE", x0 + W / 2, y0 + H / 2, 0.7f * k, C_BAD, TextAlignment.CENTER); f.Dispose(); return; }
+
+    float y = y0 + 54 * k, ts = 0.48f * k;
+
+    // jump interlock
+    if (hJump != Proto.JUMP_NONE)
+    {
+        bool ready = hJump == Proto.JUMP_READY;
+        Box(ref f, x0 + 8 * k, y, W - 16 * k, 26 * k, ready ? C_GOOD : C_WARN);
+        Txt(ref f, ready ? "JUMP READY: drives unlocked" : "JUMP PREP: drives locked until all drones dock", x0 + W / 2, y + 4 * k, 0.48f * k, C_BG, TextAlignment.CENTER);
+        y += 34 * k;
+    }
+
+    // factory
+    if (facOk || pStock > 0)
+    {
+        Txt(ref f, "FACTORY", x0 + 10 * k, y, 0.42f * k, C_DIM);
+        Txt(ref f, "stock " + pLive + "/" + pStock + "   built " + facBuilt, x0 + W - 10 * k, y, 0.42f * k, C_DIM, TextAlignment.RIGHT);
+        y += 20 * k;
+        string fs = facOk ? Proto.FactoryName(facSt) : "NO FACTORY LINK";
+        Color fc = !facOk || facSt == Proto.FAC_ERROR ? C_BAD : facSt == Proto.FAC_STALLED ? C_WARN : facSt == Proto.FAC_IDLE ? C_DIM : C_GOOD;
+        Txt(ref f, fs, x0 + 10 * k, y, ts, fc);
+        if (facProg >= 0) Bar(ref f, x0 + W * 0.42f, y + 6 * k, W * 0.5f, 10 * k, facProg, C_ACC);
+        y += 24 * k;
+        if (facOk && facMsg.Length > 0) { Txt(ref f, facMsg, x0 + 10 * k, y, 0.4f * k, C_DIM); y += 20 * k; }
+        y += 6 * k;
+    }
+
+    // docks
+    Txt(ref f, "DOCKS", x0 + 10 * k, y, 0.42f * k, C_DIM);
+    Txt(ref f, "BATT", x0 + W * 0.62f, y, 0.42f * k, C_DIM);
+    Txt(ref f, "HULL", x0 + W * 0.82f, y, 0.42f * k, C_DIM);
+    y += 20 * k;
+    float rowH = 26 * k, bottom = y0 + H - 70 * k;
+    int shown = 0;
+    foreach (var d in dockRows)
+    {
+        if (y + rowH > bottom) { Txt(ref f, "+" + (dockRows.Count - shown) + " more", x0 + 10 * k, y, 0.4f * k, C_DIM); break; }
+        Color c = d.State == 2 ? C_DOCK : d.State == 1 ? C_WARN : C_DIM;
+        Box(ref f, x0 + 8 * k, y + 4 * k, 4 * k, rowH - 10 * k, c);
+        string label = d.Name.Length > 22 ? d.Name.Substring(0, 22) : d.Name;
+        Txt(ref f, label, x0 + 18 * k, y + 2 * k, 0.44f * k, C_TXT);
+        Txt(ref f, d.State == 2 ? (d.Call.Length > 0 ? d.Call : "occupied") : d.State == 1 ? d.Call + " inbound" : "free", x0 + W * 0.40f, y + 2 * k, 0.44f * k, c);
+        if (d.State == 2 && d.Call.Length > 0)
+        {
+            Bar(ref f, x0 + W * 0.62f, y + 8 * k, W * 0.16f, 9 * k, d.Batt, LevelColor(d.Batt));
+            Bar(ref f, x0 + W * 0.82f, y + 8 * k, W * 0.12f, 9 * k, d.Integ, LevelColor(d.Integ));
+        }
+        y += rowH; shown++;
+    }
+    if (dockRows.Count == 0) Txt(ref f, "no connectors tagged [Dock]", x0 + 18 * k, y, 0.44f * k, C_DIM);
+
+    // logistics footer
+    float fy = y0 + H - 62 * k;
+    Box(ref f, x0, fy - 6 * k, W, 2 * k, C_PANEL);
+    string rep = pRepairN > 0 ? (pRepair ? "REPAIR ON" : "repair idle") : "no [Repair]";
+    string rea = pRearmN > 0 ? (pRearm ? "REARM ON" : "rearm idle") : "no [Rearm]";
+    Txt(ref f, rep + "    " + rea, x0 + 10 * k, fy, ts, pRepair || pRearm ? C_GOOD : C_DIM);
+    string chg = pCharging < 0 ? "charging: unrestricted" : "charging " + pCharging + (pMaxC > 0 ? "/" + pMaxC : "") + " drones";
+    string res = pReserve >= 0 ? "   hub battery " + Util.PctM(pReserve) : "";
+    Txt(ref f, chg + res, x0 + 10 * k, fy + 24 * k, ts, C_TXT);
     f.Dispose();
 }

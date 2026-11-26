@@ -8,6 +8,7 @@
 //   name contains [Fleet Core]   -> Hub Core
 //   name contains [Fleet UI]     -> Hub UI
 //   name contains [Fleet Drone]  -> Drone
+//   name contains [Fleet Factory]-> Factory
 //   or the block already runs a Fleet System script -> updated to the latest
 //
 // Safety: shows the plan and asks first; refuses while Space Engineers is
@@ -26,9 +27,9 @@ using System.Xml;
 public static class FleetPatch
 {
     const string XsiNs = "http://www.w3.org/2001/XMLSchema-instance";
-    static readonly string[] Kinds = { "HubCore", "HubUI", "Drone" };
-    static readonly string[] Tags = { "[Fleet Core]", "[Fleet UI]", "[Fleet Drone]" };
-    static readonly Regex Header = new Regex(@"FLEET SYSTEM (\S+) \S+ (HubCore|HubUI|Drone)\b");
+    static readonly string[] Kinds = { "HubCore", "HubUI", "Drone", "Factory" };
+    static readonly string[] Tags = { "[Fleet Core]", "[Fleet UI]", "[Fleet Drone]", "[Fleet Factory]" };
+    static readonly Regex Header = new Regex(@"FLEET SYSTEM (\S+) \S+ (HubCore|HubUI|Drone|Factory)\b");
 
     class Hit { public string Block; public string Kind; public string Change; }
     class Plan { public string Path; public string Label; public List<Hit> Hits = new List<Hit>(); }
@@ -109,6 +110,7 @@ public static class FleetPatch
             Console.WriteLine("   hub brain PB   ->  include [Fleet Core]   e.g.  Programmable Block [Fleet Core]");
             Console.WriteLine("   hub screen PB  ->  include [Fleet UI]");
             Console.WriteLine("   drone PB       ->  include [Fleet Drone]");
+            Console.WriteLine("   factory PB     ->  include [Fleet Factory]");
             Console.WriteLine("then save, exit the game and run the installer again.");
             return 0;
         }
@@ -117,7 +119,7 @@ public static class FleetPatch
         foreach (var p in plans)
         {
             Console.WriteLine(p.Label);
-            foreach (var h in p.Hits) Console.WriteLine("    " + h.Change.PadRight(8) + Short(h.Kind).PadRight(7) + h.Block);
+            foreach (var h in p.Hits) Console.WriteLine("    " + h.Change.PadRight(8) + Short(h.Kind).PadRight(9) + h.Block);
         }
         Console.WriteLine();
         Console.WriteLine(total + " programmable block(s) in " + plans.Count + " file(s). Every file is backed up first.");
@@ -171,7 +173,7 @@ public static class FleetPatch
     }
 
     // ------------------------------------------------------------------ core
-    static string Short(string kind) { return kind == "HubCore" ? "Core" : kind == "HubUI" ? "UI" : "Drone"; }
+    static string Short(string kind) { return kind == "HubCore" ? "Core" : kind == "HubUI" ? "UI" : kind == "Factory" ? "Factory" : "Drone"; }
 
     static string KindOf(string name, string program)
     {

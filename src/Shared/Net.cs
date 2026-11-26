@@ -10,7 +10,7 @@ class Net
 {
     public readonly IMyIntergridCommunicationSystem IGC;
     public int NetId, KeyHash;
-    public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "";
+    public string TNav = "", THello = "", TSts = "", TOrd = "", TCmd = "", TSnap = "", TFac = "", TFacSt = "";
 
     public Net(IMyIntergridCommunicationSystem igc) { IGC = igc; }
 
@@ -20,7 +20,7 @@ class Net
         KeyHash = Util.Hash(key ?? "");
         string p = "FS" + netId + "/";
         TNav = p + "nav"; THello = p + "hello"; TSts = p + "sts"; TOrd = p + "ord";
-        TCmd = p + "cmd"; TSnap = p + "snap";
+        TCmd = p + "cmd"; TSnap = p + "snap"; TFac = p + "fac"; TFacSt = p + "facst";
     }
 
     MyTuple<int, int, int, int, long> Hdr(int type, long seq)
@@ -77,24 +77,24 @@ class Net
     }
 
     // ---------------- STATUS (drone -> its hub, unicast) ----------------
-    // (role, state, task, ackSeq, dockId) (pos, vel) (battery, h2, cargo, integrity, flags)
+    // (role, state, task, ackSeq, dockId) (pos, vel) (battery, h2, cargo, integrity, ammo, flags)
     public bool SendStatus(long hub, string role, int state, int task, long ack, long dockId,
-                           Vector3D pos, Vector3D vel, float batt, float h2, float cargo, float integ, int flags)
+                           Vector3D pos, Vector3D vel, float batt, float h2, float cargo, float integ, float ammo, int flags)
     {
         return IGC.SendUnicastMessage(hub, TSts,
-            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, int>>(
+            new MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>>(
                 Hdr(Proto.M_STS, 0),
                 new MyTuple<string, int, int, long, long>(role, state, task, ack, dockId),
                 new MyTuple<Vector3D, Vector3D>(pos, vel),
-                new MyTuple<float, float, float, float, int>(batt, h2, cargo, integ, flags)));
+                new MyTuple<float, float, float, float, float, int>(batt, h2, cargo, integ, ammo, flags)));
     }
 
-    public bool ReadStatus(MyIGCMessage m, out MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, int>> s)
+    public bool ReadStatus(MyIGCMessage m, out MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>> s)
     {
-        s = default(MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, int>>);
+        s = default(MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>>);
         if (m.Tag != TSts) return false;
-        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, int>>)) return false;
-        s = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, int>>)m.Data;
+        if (!(m.Data is MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>>)) return false;
+        s = (MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>>)m.Data;
         return Ok(s.Item1, Proto.M_STS);
     }
 

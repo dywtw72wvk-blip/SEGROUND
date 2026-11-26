@@ -12,7 +12,8 @@ class Drone
     public int State, Task, Flags;
     public long Ack, DockId;
     public Vector3D Pos, Vel;
-    public float Batt = -1, H2 = -1, Cargo = -1, Integ = 1;
+    public float Batt = -1, H2 = -1, Cargo = -1, Integ = 1, Ammo = -1;
+    public double DockedSince;
     public double Seen = -1e9;
     public bool LostFlag = true, Restored;
 

@@ -307,3 +307,88 @@ Left and right move through both rows.
 26. Run `recall`. Everything docks and the manager pauses. Then `defense on`.
 
 Report which steps passed, plus any oddities: AI hand-over behaviour, leash distance feel, patrol speed and runtime numbers.
+
+---
+
+# Phase 3: Logistics (base fabrication, repair, rearm, power, jump lock)
+
+New script: **`Factory.cs`**. Put it on a programmable block named `[Fleet Factory]` and the installer fills it in automatically. Protocol v3 means all scripts update together; `install.bat` does this.
+
+## 11. Factory (base fabrication line)
+
+**Build the bay.** Name these blocks with `[Factory]`; all must be on the hub:
+- **1 projector:** load your Buster blueprint, for example `FS Buster Atmo`. Align it so the drone's merge block meets the factory merge block, and tick **Keep projection**.
+- **Welders** covering the whole projection.
+- **1 merge block:** holds the drone while it's welded.
+- **1 connector:** lines up with the drone's connector, face to face.
+
+Leave 25 m or more of clear space in front of the bay. A finished drone backs out along the connector axis when it launches.
+
+**How a cycle runs:**
+1. **Weld.** The factory welds the drone. If welding stalls for 60 s, it shows `WAITING PARTS`, usually because components ran out.
+2. **Release.** It turns the welders and projector off and releases the merge block. The bay connector locks onto the drone within a few ticks.
+3. **Hand-over.** Hub Core gives the new drone the network key, the drone registers as docked, charges in the bay, and the defense manager launches it.
+4. **Repeat.** Once the bay is free, the next build starts.
+
+**Control it** from Hub Core:
+- `stock <n>`, or `TargetStock` in Custom Data, sets how many defense drones to keep. The factory builds whenever the live count is below that. `0` turns automatic builds off.
+- `build <n>` queues builds by hand.
+
+Builds run in BASE mode only, unless `FactoryInCarrier=true`.
+
+Factory PB arguments: `build <n>`, `on`, `off`, `reset`, `rescan`.
+
+> **Check once in game:** a programmable block welded from a projection must keep its script. Because the installer patches your blueprints, the printed drone's PB carries the Drone script. If a printed drone shows a blank PB, tell me and I'll add a fallback.
+
+## 12. Repair, rearm and launch readiness
+
+- **Blocks named `[Repair]`**, typically welders aimed at your docks, switch on while any docked drone has hull below 100%.
+- **Blocks named `[Rearm]`**, typically sorters pushing ammo into docked drones, switch on while any drone is docked.
+- **Launch readiness:** a drone launches only when battery is at least `LaunchBattery`, hull at least `LaunchIntegrity` (0.95) and ammo at least `LaunchAmmo` (0.5). The hull and ammo checks only apply if repair or rearm blocks exist. After `RepairTimeout` (180 s) the drone goes anyway, so a drone missing destroyed blocks is never stuck.
+- **Auto-RTB** also triggers on low ammo (`RtbAmmo=0.1`).
+
+## 13. Power-aware charging
+
+- `CarrierMaxCharging=2` lets at most 2 docked drones charge at once in carrier mode, fullest first, so they're ready soonest. `BaseMaxCharging=0` means unlimited at a base.
+- `PowerReserve=0.3`: when the hub's own batteries fall below 30%, drone charging pauses entirely.
+- A held drone has its batteries switched off and runs on hub power. It turns them back on itself before undocking.
+
+  > Don't disconnect a held drone by hand, because its batteries are off. Use `undock`.
+
+## 14. Carrier jump interlock
+
+| Command | Effect |
+|---------|--------|
+| `jump prep` | Recalls every drone and **disables the jump drives** until all are docked. Then `JUMP READY` appears and the drives unlock. |
+| `jump force` | Unlocks the drives now. Undocked drones are left behind. |
+| `jump cancel` | Abort. |
+
+- The UI **JUMP** button toggles prep and cancel.
+- When the hub detects the jump (a position change of more than 1 km), prep ends and the defense manager resumes 5 s later.
+
+## 15. Hangar screen
+
+Put `[FS:Hangar]` in an LCD's name. It shows:
+- the jump lock banner,
+- factory state with a progress bar and stock against target,
+- every `[Dock]` with its occupant's battery and hull,
+- repair and rearm status,
+- charging limits and the hub's battery level.
+
+## 16. Phase 3 acceptance test
+
+**M. Factory**
+
+27. Build the bay, load the Buster blueprint, and set `stock 3` with fewer than 3 Busters alive. You should see `BUILDING`, then `SECURING`, then `RELEASING`. Then `built drone #1`, then `New drone BUSTER-xx`, and the drone appears as DOCKED in the bay.
+28. Run out of steel plates mid-build. `WAITING PARTS` appears, and welding resumes when components return.
+29. Once charged, the new drone launches by itself. Then the next build starts.
+
+**N. Repair and rearm**
+
+30. Damage a drone and let it auto-RTB. `Repair bay ON` appears, and it stays docked until hull is at least 95% or the timeout passes.
+31. Empty a drone's turret ammo. It RTBs on ammo, `[Rearm]` sorters run, and it launches when it's at least 50% full.
+
+**O. Carrier power and jump**
+
+32. In carrier mode with 4 drones docked and low, only 2 charge at a time. Drain the hub batteries below 30%: charging pauses.
+33. Run `jump prep`. Everything docks, then `JUMP READY` appears. Jump: `Jump detected`, then defense resumes.

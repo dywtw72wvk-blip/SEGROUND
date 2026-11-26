@@ -1,7 +1,8 @@
 // ============================================================================
-// FLEET SYSTEM — HUB UI (phase 2)
-// Renders the fleet list on LCDs / cockpit screens tagged [FS:Fleet] and the
-// tactical map on [FS:Map] (add :1 etc. for a cockpit surface index), and
+// FLEET SYSTEM — HUB UI (phase 3)
+// Renders the fleet list on LCDs / cockpit screens tagged [FS:Fleet], the
+// tactical map on [FS:Map] and the hangar on [FS:Hangar] (add :1 etc. for a
+// cockpit surface index), and
 // turns button presses into commands for Hub Core (same construct, local IGC).
 //
 // Arguments: up | down | left | right | apply | back
@@ -16,13 +17,19 @@ readonly Perf perf = new Perf();
 IMyBroadcastListener snapL;
 readonly List<IMyTextSurface> fleetSurf = new List<IMyTextSurface>();
 readonly List<IMyTextSurface> mapSurf = new List<IMyTextSurface>();
+readonly List<IMyTextSurface> hangarSurf = new List<IMyTextSurface>();
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
-string fleetTag = "FS:Fleet", mapTag = "FS:Map";
+string fleetTag = "FS:Fleet", mapTag = "FS:Map", hangarTag = "FS:Hangar";
 double T, snapT = -1e9, nextScan;
 bool flip;
 
 // snapshot from Hub Core
-int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert;
+int hMode, hCfgMode, hSpacing, hFree, hDocks, hOnline, hPerfUs, hAlert, hJump;
+// hangar
+readonly List<DockRow> dockRows = new List<DockRow>();
+bool facOk, pRepair, pRearm;
+int facSt, facProg, facBuilt, facDemand, pCharging, pMaxC, pReserve, pStock, pLive, pRepairN, pRearmN;
+string facMsg = "";
 bool hAutoRtb, hWp, hAlertForced, hSafe, hDefense;
 string hForm = "", hName = "";
 readonly List<Row> rows = new List<Row>();
@@ -34,14 +41,16 @@ int scroll, action;
 // Row 1 acts on the selected drone (or ALL); row 2 is fleet-wide.
 const int TargetedActions = 7;
 static readonly string[] Actions = { "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "AUTO",
-                                     "SCRAMBLE", "RECALL", "ALERT", "SAFE", "FORM", "MODE" };
+                                     "SCRAMBLE", "RECALL", "ALERT", "SAFE", "FORM", "MODE", "JUMP" };
 static readonly string[] ActionCmd = { "escort", "hold", "goto", "dock", "undock", "stop", "auto",
-                                       "scramble", "recall", "alert next", "safe toggle", "formation next", "mode next" };
+                                       "scramble", "recall", "alert next", "safe toggle", "formation next", "mode next", "jump toggle" };
+
+class DockRow { public string Name = "", Call = ""; public int State, Batt, Integ; }
 
 class Row
 {
     public string Call = "", Role = "";
-    public int State, Dir, Batt, Integ, Cargo, H2, Speed, Flags, LostS;
+    public int State, Dir, Batt, Integ, Cargo, H2, Speed, Flags, LostS, Ammo;
     public long Dist, LX, LY, LZ;
     public bool Unresp, Queued, Acked, Managed;
 }
@@ -60,6 +69,7 @@ void LoadConfig()
     int netId = cfg.I("NetId", 1);
     fleetTag = cfg.S("FleetTag", "FS:Fleet");
     mapTag = cfg.S("MapTag", "FS:Map");
+    hangarTag = cfg.S("HangarTag", "FS:Hangar");
     cfg.Save();
     net.Configure(netId, "");
     if (snapL != null) IGC.DisableBroadcastListener(snapL);
@@ -70,6 +80,7 @@ void Scan()
 {
     Collect(fleetTag, fleetSurf);
     Collect(mapTag, mapSurf);
+    Collect(hangarTag, hangarSurf);
 }
 
 void Collect(string tag, List<IMyTextSurface> into)
@@ -112,7 +123,7 @@ public void Main(string arg, UpdateType src)
     if (input) Input(arg.Trim());
     if (T >= nextScan) { Scan(); nextScan = T + 10; }
     if (input || (src & UpdateType.Update10) != 0) Render();
-    Echo("FLEET HUB UI\nScreens: " + fleetSurf.Count + " [" + fleetTag + "], " + mapSurf.Count + " [" + mapTag + "]\nCore link: " +
+    Echo("FLEET HUB UI\nScreens: " + fleetSurf.Count + " [" + fleetTag + "], " + mapSurf.Count + " [" + mapTag + "], " + hangarSurf.Count + " [" + hangarTag + "]\nCore link: " +
          (Linked() ? "OK" : "NONE (is Hub Core running with the same NetId?)") + "\n" + perf.Text());
 }
 
@@ -167,8 +178,9 @@ static long L(string[] f, int i) { long v; return i < f.Length && long.TryParse(
 
 void Parse(string s)
 {
-    int ri = 0;
+    int ri = 0, ki = 0;
     evts.Clear();
+    facOk = false;
     foreach (var line in s.Split('\n'))
     {
         if (line.Length < 3) continue;
@@ -178,7 +190,7 @@ void Parse(string s)
             case "H":
                 hMode = I(f, 1); hCfgMode = I(f, 2); hForm = f.Length > 3 ? f[3] : ""; hSpacing = I(f, 4); hAutoRtb = I(f, 5) == 1;
                 hFree = I(f, 6); hDocks = I(f, 7); hWp = I(f, 8) == 1; hPerfUs = I(f, 9); hOnline = I(f, 10); hName = f.Length > 11 ? f[11] : "";
-                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1;
+                hAlert = I(f, 12); hAlertForced = I(f, 13) == 1; hSafe = I(f, 14) == 1; hDefense = I(f, 15) == 1; hJump = I(f, 16);
                 break;
             case "D":
                 {
@@ -188,8 +200,22 @@ void Parse(string s)
                     r.Batt = I(f, 5); r.Integ = I(f, 6); r.Cargo = I(f, 7); r.H2 = I(f, 8);
                     r.Dist = L(f, 9); r.Speed = I(f, 10); r.Flags = I(f, 11); r.LostS = I(f, 12);
                     r.Unresp = I(f, 13) == 1; r.Queued = I(f, 14) == 1; r.Acked = I(f, 15) == 1;
-                    r.LX = L(f, 16); r.LY = L(f, 17); r.LZ = L(f, 18); r.Managed = I(f, 19) == 1;
+                    r.LX = L(f, 16); r.LY = L(f, 17); r.LZ = L(f, 18); r.Managed = I(f, 19) == 1; r.Ammo = f.Length > 20 ? I(f, 20) : -1;
                 }
+                break;
+            case "K":
+                {
+                    if (ki >= dockRows.Count) dockRows.Add(new DockRow());
+                    var k = dockRows[ki++];
+                    k.Name = f[1]; k.State = I(f, 2); k.Call = f.Length > 3 ? f[3] : ""; k.Batt = I(f, 4); k.Integ = I(f, 5);
+                }
+                break;
+            case "F":
+                facOk = true; facSt = I(f, 1); facProg = I(f, 2); facBuilt = I(f, 3); facDemand = I(f, 4); facMsg = f.Length > 5 ? f[5] : "";
+                break;
+            case "P":
+                pRepair = I(f, 1) == 1; pRearm = I(f, 2) == 1; pCharging = I(f, 3); pMaxC = I(f, 4); pReserve = I(f, 5);
+                pStock = I(f, 6); pLive = I(f, 7); pRepairN = I(f, 8); pRearmN = I(f, 9);
                 break;
             case "E":
                 if (f.Length > 2) evts.Add(Util.Age(I(f, 1)) + "  " + f[2]);
@@ -197,6 +223,7 @@ void Parse(string s)
         }
     }
     if (rows.Count > ri) rows.RemoveRange(ri, rows.Count - ri);
+    if (dockRows.Count > ki) dockRows.RemoveRange(ki, dockRows.Count - ki);
 }
 
 void Render()
@@ -204,4 +231,5 @@ void Render()
     flip = !flip;
     foreach (var s in fleetSurf) DrawFleet(s);
     foreach (var s in mapSurf) DrawMap(s);
+    foreach (var s in hangarSurf) DrawHangar(s);
 }

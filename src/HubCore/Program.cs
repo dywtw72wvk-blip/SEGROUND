@@ -1,10 +1,17 @@
 // ============================================================================
-// FLEET SYSTEM — HUB CORE (phase 2)
+// FLEET SYSTEM — HUB CORE (phase 3)
 // Runs on the carrier or base. Registry, Carrier/Base/Auto modes, reference
 // frame broadcast, reliable orders, dock manager, formations, provisioning.
 // Phase 2 defense: alert levels from the hub's own turrets/sensors and drone
 // reports; automatic screen size per alert, launch/recall/charge rotation,
 // patrol orbit, engage/disengage of drones' vanilla combat blocks, SAFE switch.
+//
+// Phase 3 logistics: drone stock target for the Factory PB, [Repair] welders and
+// [Rearm] sorters run while drones need them, launch readiness (charge, ammo,
+// hull), power-aware charging, carrier jump interlock.
+//
+// Logistics commands:
+//   jump <prep|force|cancel|toggle>   stock <n>   build <n> (forwarded to Factory)
 //
 // Defense commands:
 //   auto <target>   manual <target>   defense <on|off|toggle>
@@ -62,12 +69,25 @@ Vector3D wp;
 int epoch, callCtr;
 int alertOverride = -1;   // -1 = automatic
 bool safe;
+int jumpState = Proto.JUMP_NONE;
 long ctr;
 
 // --- runtime
 double T, nextNav, nextTask, nextSnap, nextScan, nextProv, nextEcho, nextMode, lastModeT, anchoredFor;
 double nextManage, lastRed = -1e9, phase, rate;
 int alert = Proto.ALERT_GREEN;
+// phase 3 runtime
+readonly List<IMyFunctionalBlock> repairBlocks = new List<IMyFunctionalBlock>(), rearmBlocks = new List<IMyFunctionalBlock>();
+readonly List<IMyJumpDrive> jumpDrives = new List<IMyJumpDrive>();
+readonly List<IMyBatteryBlock> hubBats = new List<IMyBatteryBlock>(), otherBats = new List<IMyBatteryBlock>();
+readonly List<Drone> chargeOrder = new List<Drone>();
+IMyBroadcastListener facL;
+int targetStock, maxChargeC, maxChargeB, facSt = -1, facProg = -1, facBuilt, facDemand, charging, liveStock;
+double launchInteg, launchAmmo, rtbAmmo, repairTimeout, powerReserve, nextFac, nextPower, facT = -1e9;
+bool factoryInCarrier, repairOn, rearmOn, powerLimited, havePrev;
+float hubReserve = -1;
+string repairTag = "[Repair]", rearmTag = "[Rearm]", facMsg = "";
+Vector3D prevPos;
 int mode = Proto.MODE_CARRIER;
 bool havePos, moving;
 Vector3D lastPos, vel, angVel;
@@ -91,7 +111,7 @@ public void Save()
 {
     var ini = new MyIni();
     ini.Set("hub", "epoch", epoch); ini.Set("hub", "ctr", ctr); ini.Set("hub", "calls", callCtr);
-    ini.Set("hub", "alertOv", alertOverride); ini.Set("hub", "safe", safe);
+    ini.Set("hub", "alertOv", alertOverride); ini.Set("hub", "safe", safe); ini.Set("hub", "jump", jumpState);
     foreach (var d in reg.Values)
     {
         string s = "d" + d.Addr;
@@ -109,6 +129,7 @@ void Load()
     {
         epoch = ini.Get("hub", "epoch").ToInt32(); ctr = ini.Get("hub", "ctr").ToInt64(); callCtr = ini.Get("hub", "calls").ToInt32();
         alertOverride = ini.Get("hub", "alertOv").ToInt32(-1); safe = ini.Get("hub", "safe").ToBoolean();
+        jumpState = ini.Get("hub", "jump").ToInt32();
         var secs = new List<string>();
         ini.GetSections(secs);
         foreach (var s in secs)
@@ -165,6 +186,17 @@ void LoadConfig()
     alertTag = cfg.S("AlertSensorTag", "[Alert]");
     patrolBase = cfg.D("BasePatrolSpeed", 8);
     patrolCarrier = cfg.D("CarrierPatrolSpeed", 0);
+    targetStock = cfg.I("TargetStock", 0);
+    factoryInCarrier = cfg.B("FactoryInCarrier", false);
+    repairTag = cfg.S("RepairTag", "[Repair]");
+    rearmTag = cfg.S("RearmTag", "[Rearm]");
+    launchInteg = cfg.D("LaunchIntegrity", 0.95);
+    launchAmmo = cfg.D("LaunchAmmo", 0.5);
+    rtbAmmo = cfg.D("RtbAmmo", 0.1);
+    repairTimeout = cfg.D("RepairTimeout", 180);
+    maxChargeC = cfg.I("CarrierMaxCharging", 2);
+    maxChargeB = cfg.I("BaseMaxCharging", 0);
+    powerReserve = cfg.D("PowerReserve", 0.3);
     perfMode = cfg.S("Perf", "Normal").ToUpper();
     string wps = cfg.S("Waypoint", "");
     string nm;
@@ -176,6 +208,8 @@ void LoadConfig()
     if (cmdL != null) IGC.DisableBroadcastListener(cmdL);
     helloL = IGC.RegisterBroadcastListener(net.THello);
     cmdL = IGC.RegisterBroadcastListener(net.TCmd);
+    if (facL != null) IGC.DisableBroadcastListener(facL);
+    facL = IGC.RegisterBroadcastListener(net.TFacSt);
 }
 
 void Scan()
@@ -183,6 +217,7 @@ void Scan()
     tmp.Clear();
     GridTerminalSystem.GetBlocksOfType(tmp, b => b.IsSameConstructAs(Me));
     dockConns.Clear(); allConns.Clear(); gears.Clear(); hubTurrets.Clear(); alertSensors.Clear();
+    repairBlocks.Clear(); rearmBlocks.Clear(); jumpDrives.Clear(); hubBats.Clear();
     refCtl = null;
     IMyShipController any = null, main = null;
     bool antennaOk = false;
@@ -201,6 +236,10 @@ void Scan()
         var g = b as IMyLandingGear; if (g != null) { gears.Add(g); continue; }
         var tu = b as IMyLargeTurretBase; if (tu != null) { hubTurrets.Add(tu); continue; }
         var se = b as IMySensorBlock; if (se != null) { if (b.CustomName.Contains(alertTag)) alertSensors.Add(se); continue; }
+        var jd = b as IMyJumpDrive; if (jd != null) { jumpDrives.Add(jd); continue; }
+        var bt = b as IMyBatteryBlock; if (bt != null) { hubBats.Add(bt); continue; }
+        var fb = b as IMyFunctionalBlock;
+        if (fb != null) { if (b.CustomName.Contains(repairTag)) repairBlocks.Add(fb); else if (b.CustomName.Contains(rearmTag)) rearmBlocks.Add(fb); }
         var a = b as IMyRadioAntenna; if (a != null && a.IsWorking && a.EnableBroadcasting) antennaOk = true;
     }
     if (refCtl == null) refCtl = main ?? any;
@@ -239,6 +278,8 @@ void Tick(double dt)
     if (T >= nextTask) { Tasking(); nextTask = T + 0.5; }
     if (T >= nextSnap) { SendSnapshot(); nextSnap = T + 0.3; }
     if (autoProv && T >= nextProv) { Provision(false); nextProv = T + 10; }
+    if (T >= nextFac) { FactoryLink(); nextFac = T + 2; }
+    if (T >= nextPower) { ManagePower(); nextPower = T + 5; }
     if (T >= nextEcho) { BuildEcho(); nextEcho = T + 1; }
     SetFreq();
 }
@@ -259,6 +300,14 @@ void UpdateFrame(double dt)
         lastPos = p; havePos = true; angVel = Vector3D.Zero;
     }
     moving = vel.LengthSquared() > 0.25 || angVel.LengthSquared() > 1e-4;
+
+    // a jump shows up as a >1 km position change between ticks
+    if (havePrev && (M.Translation - prevPos).LengthSquared() > 1e6)
+    {
+        Log("Jump detected");
+        if (jumpState != Proto.JUMP_NONE) { jumpState = Proto.JUMP_NONE; SetJumpDrives(true); nextManage = T + 5; Log("Jump complete: defense resumes"); }
+    }
+    prevPos = M.Translation; havePrev = true;
 }
 
 void ResolveMode(double dt)
@@ -327,7 +376,7 @@ void Receive()
     while (uni.HasPendingMessage)
     {
         var m = uni.AcceptMessage();
-        MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, int>> s;
+        MyTuple<MyTuple<int, int, int, int, long>, MyTuple<string, int, int, long, long>, MyTuple<Vector3D, Vector3D>, MyTuple<float, float, float, float, float, int>> s;
         if (!net.ReadStatus(m, out s)) continue;
 
         Drone d;
@@ -339,7 +388,7 @@ void Receive()
         bool wasDocked = d.Docked;
         d.Role = s.Item2.Item1; d.State = s.Item2.Item2; d.Task = s.Item2.Item3; d.Ack = s.Item2.Item4; d.DockId = s.Item2.Item5;
         d.Pos = s.Item3.Item1; d.Vel = s.Item3.Item2;
-        d.Batt = s.Item4.Item1; d.H2 = s.Item4.Item2; d.Cargo = s.Item4.Item3; d.Integ = s.Item4.Item4; d.Flags = s.Item4.Item5;
+        d.Batt = s.Item4.Item1; d.H2 = s.Item4.Item2; d.Cargo = s.Item4.Item3; d.Integ = s.Item4.Item4; d.Ammo = s.Item4.Item5; d.Flags = s.Item4.Item6;
         d.Seen = T;
 
         if (d.LostFlag)
@@ -348,7 +397,7 @@ void Receive()
             if (d.Restored) { d.Restored = false; Log(d.Call + " reconnected"); Reissue(d); }
             else Log(d.Call + " link restored");
         }
-        if (!wasDocked && d.Docked) { Log(d.Call + " docked"); nextProv = T + 1; }
+        if (!wasDocked && d.Docked) { Log(d.Call + " docked"); nextProv = T + 1; d.DockedSince = T; nextPower = T + 1; }
         if (wasDocked && !d.Docked) Log(d.Call + " undocked");
         if (d.Acked) { d.Tries = 0; d.Unresp = false; }
     }
@@ -459,6 +508,7 @@ void Tasking()
             string why = null;
             if (d.Batt >= 0 && d.Batt < rtbBatt) why = "battery " + Util.Pct(d.Batt);
             else if (d.Integ < rtbInteg) why = "damage, hull " + Util.Pct(d.Integ);
+            else if (d.Ammo >= 0 && d.Ammo < rtbAmmo) why = "ammo " + Util.Pct(d.Ammo);
             else if ((d.Flags & Proto.F_WANT_RTB) != 0) why = "drone request";
             if (why != null) { Log(d.Call + " auto-RTB (" + why + ")"); OrderDock(d); }
         }
@@ -472,6 +522,7 @@ void Tasking()
     }
 
     UpdateAlert();
+    Logistics();
     Manage();
 
     // formation slots (c = engage flag, leash, patrol flag)
@@ -531,7 +582,7 @@ void UpdateAlert()
 // One action per LaunchInterval so departures from the docks are staggered.
 void Manage()
 {
-    if (!defense || T < nextManage) return;
+    if (!defense || jumpState != Proto.JUMP_NONE || T < nextManage) return;
     mOut.Clear(); mReady.Clear(); mIdle.Clear();
     int total = 0;
     foreach (var d in sorted)
@@ -539,7 +590,7 @@ void Manage()
         if (!d.Managed || d.LostFlag) continue;
         total++;
         if (d.Dir == Proto.O_ESCORT) mOut.Add(d);
-        else if (d.Docked) { if (d.Batt < 0 || d.Batt >= launchBatt) mReady.Add(d); }
+        else if (d.Docked) { if (LaunchReady(d)) mReady.Add(d); }
         else if (d.Dir != Proto.O_DOCK) mIdle.Add(d);
     }
     int target = alert == Proto.ALERT_RED ? screenR : alert == Proto.ALERT_YELLOW ? screenY : screenG;
@@ -580,6 +631,106 @@ static Drone Best(List<Drone> l, bool highest)
     Drone b = null;
     foreach (var d in l) if (b == null || (highest ? d.Batt > b.Batt : d.Batt < b.Batt)) b = d;
     return b;
+}
+
+// ---------------------------------------------------------------- logistics (phase 3)
+bool LaunchReady(Drone d)
+{
+    if (d.Batt >= 0 && d.Batt < launchBatt) return false;
+    bool waited = T - d.DockedSince > repairTimeout;   // never strand a drone that can't be fully fixed
+    if (d.Integ < launchInteg && repairBlocks.Count > 0 && !waited) return false;
+    if (d.Ammo >= 0 && d.Ammo < launchAmmo && rearmBlocks.Count > 0 && !waited) return false;
+    return true;
+}
+
+void SetAll(List<IMyFunctionalBlock> l, bool on) { foreach (var b in l) if (!b.Closed && b.Enabled != on) b.Enabled = on; }
+
+void SetJumpDrives(bool on) { foreach (var j in jumpDrives) if (!j.Closed && j.Enabled != on) j.Enabled = on; }
+
+// repair/rearm on demand + jump interlock (2 Hz from Tasking)
+void Logistics()
+{
+    bool dmg = false, any = false, allDocked = true;
+    foreach (var d in reg.Values)
+    {
+        if (d.LostFlag) continue;
+        if (d.Docked) { any = true; if (d.Integ < 0.995) dmg = true; }
+        else allDocked = false;
+    }
+    if (dmg != repairOn) { repairOn = dmg; if (repairBlocks.Count > 0) Log(dmg ? "Repair bay ON" : "Repair bay idle"); }
+    rearmOn = any;
+    SetAll(repairBlocks, repairOn);
+    SetAll(rearmBlocks, rearmOn);
+
+    if (jumpState == Proto.JUMP_PREP)
+    {
+        SetJumpDrives(false);
+        if (allDocked) { jumpState = Proto.JUMP_READY; SetJumpDrives(true); Log("JUMP READY: all drones docked"); }
+    }
+}
+
+// Tell the Factory PB how many drones to build; read its status
+void FactoryLink()
+{
+    liveStock = 0;
+    foreach (var d in reg.Values) if (IsDefense(d.Role) && (!d.LostFlag || T - d.Seen < 120)) liveStock++;
+    bool allowed = targetStock > 0 && (mode == Proto.MODE_BASE || factoryInCarrier) && jumpState == Proto.JUMP_NONE && T > 30;
+    IGC.SendBroadcastMessage(net.TFac, allowed ? Math.Max(0, targetStock - liveStock) : 0, TransmissionDistance.CurrentConstruct);
+
+    while (facL.HasPendingMessage)
+    {
+        var st = facL.AcceptMessage().Data as string;
+        if (st == null) continue;
+        var f = st.Split('|');
+        if (f.Length < 5) continue;
+        int v;
+        facSt = int.TryParse(f[0], out v) ? v : -1; facProg = int.TryParse(f[1], out v) ? v : -1;
+        facBuilt = int.TryParse(f[2], out v) ? v : 0; facDemand = int.TryParse(f[3], out v) ? v : 0;
+        if (f[4] != facMsg && f[4].Length > 0) Log("Factory: " + f[4]);
+        facMsg = f[4]; facT = T;
+    }
+}
+
+// Limit how many docked drones charge at once (carrier power budget) and stop
+// charging entirely while the hub's own batteries are below PowerReserve.
+// Held drones get their batteries switched off and run on hub power; drones
+// re-enable their batteries themselves before undocking.
+void ManagePower()
+{
+    double cur = 0, max = 0;
+    foreach (var b in hubBats) if (!b.Closed && b.IsFunctional) { cur += b.CurrentStoredPower; max += b.MaxStoredPower; }
+    hubReserve = max > 0 ? (float)(cur / max) : -1;
+    bool low = hubReserve >= 0 && hubReserve < powerReserve;
+    int maxC = mode == Proto.MODE_BASE ? maxChargeB : maxChargeC;
+    if (maxC <= 0 && !low && !powerLimited) { charging = -1; return; }
+
+    otherBats.Clear();
+    GridTerminalSystem.GetBlocksOfType(otherBats, b => !b.IsSameConstructAs(Me));
+    chargeOrder.Clear();
+    foreach (var d in reg.Values) if (!d.LostFlag && d.Docked && d.DockId != 0) chargeOrder.Add(d);
+    chargeOrder.Sort((x, y) => y.Batt.CompareTo(x.Batt));   // fullest first: gets drones ready soonest
+    int allowed = low ? 0 : (maxC <= 0 ? int.MaxValue : maxC);
+    charging = 0;
+    bool limited = false;
+    foreach (var d in chargeOrder)
+    {
+        IMyCubeGrid g = null;
+        foreach (var c in allConns)
+            if (c.EntityId == d.DockId && c.Status == MyShipConnectorStatus.Connected && c.OtherConnector != null) { g = c.OtherConnector.CubeGrid; break; }
+        if (g == null) continue;
+        bool full = d.Batt < 0 || d.Batt >= 0.99f;
+        bool on = full || charging < allowed;
+        if (!full && on) charging++;
+        if (!on) limited = true;
+        foreach (var b in otherBats)
+        {
+            if (b.CubeGrid != g || b.Closed) continue;
+            if (b.Enabled != on) b.Enabled = on;
+            if (on && b.ChargeMode != ChargeMode.Recharge) b.ChargeMode = ChargeMode.Recharge;
+        }
+    }
+    if (limited != powerLimited) Log(limited ? (low ? "Hub power low: drone charging paused" : "Charging limited to " + allowed + " drone(s)") : "Drone charging unrestricted");
+    powerLimited = limited;
 }
 
 // ---------------------------------------------------------------- commands
@@ -655,6 +806,33 @@ void Command(string raw)
                 Log("Alert " + (ov < 0 ? "automatic" : "forced " + Proto.AlertName(ov)));
                 nextTask = T;
             }
+            break;
+        case "jump":
+            {
+                string a = tgt.ToLower();
+                if (a == "toggle" || a == "all") a = jumpState == Proto.JUMP_NONE ? "prep" : "cancel";
+                if (a == "prep")
+                {
+                    jumpState = Proto.JUMP_PREP; SetJumpDrives(false);
+                    Log("JUMP PREP: recalling all drones, jump drives locked");
+                    if (docks.List.Count > 0) foreach (var d in reg.Values) if (!d.LostFlag && !d.Docked) OrderDock(d);
+                    nextTask = T;
+                }
+                else if (a == "force") { jumpState = Proto.JUMP_READY; SetJumpDrives(true); Log("JUMP FORCED: drives unlocked, undocked drones will be left behind"); }
+                else if (a == "cancel" || a == "off") { jumpState = Proto.JUMP_NONE; SetJumpDrives(true); Log("Jump prep cancelled"); nextManage = T; }
+                else Log("jump: prep | force | cancel | toggle");
+            }
+            break;
+        case "stock":
+            {
+                int n;
+                if (t.Length > 1 && int.TryParse(t[1], out n) && n >= 0) { targetStock = n; cfg.Set("TargetStock", n.ToString()); Log("Target stock " + n + (n == 0 ? " (factory off)" : "")); }
+                else Log("stock: number of defense drones to keep (0 = off)");
+            }
+            break;
+        case "build":
+            IGC.SendBroadcastMessage(net.TFac + "cmd", raw, TransmissionDistance.CurrentConstruct);
+            Log("Factory: " + Util.Clean(raw));
             break;
         case "safe":
             {
@@ -774,6 +952,7 @@ void SendSnapshot()
       .Append('|').Append(hasWp ? 1 : 0).Append('|').Append((int)(perf.Avg * 1000)).Append('|').Append(online)
       .Append('|').Append(Util.Clean(Me.CubeGrid.CustomName))
       .Append('|').Append(alert).Append('|').Append(alertOverride >= 0 ? 1 : 0).Append('|').Append(safe ? 1 : 0).Append('|').Append(defense ? 1 : 0)
+      .Append('|').Append(jumpState)
       .Append('\n');
     foreach (var d in sorted)
     {
@@ -784,8 +963,24 @@ void SendSnapshot()
           .Append('|').Append(d.LostFlag ? (int)Math.Min(99999, Math.Max(0, T - d.Seen)) : -1).Append('|').Append(d.Unresp ? 1 : 0)
           .Append('|').Append(d.Dir == Proto.O_DOCK && d.Conn == 0 ? 1 : 0).Append('|').Append(d.Acked ? 1 : 0)
           .Append('|').Append((long)lp.X).Append('|').Append((long)lp.Y).Append('|').Append((long)lp.Z)
-          .Append('|').Append(d.Managed ? 1 : 0).Append('\n');
+          .Append('|').Append(d.Managed ? 1 : 0).Append('|').Append(Util.Milli(d.Ammo)).Append('\n');
     }
+    // hangar: docks, factory, logistics
+    foreach (var c in docks.List)
+    {
+        if (c.Closed) continue;
+        Drone occ = null, res = null;
+        foreach (var d in sorted) { if (d.Docked && d.DockId == c.EntityId) occ = d; if (d.Conn == c.EntityId) res = d; }
+        int st = occ != null || c.Status == MyShipConnectorStatus.Connected ? 2 : res != null ? 1 : 0;
+        Drone who = occ ?? res;
+        sb.Append("K|").Append(Util.Clean(c.CustomName)).Append('|').Append(st).Append('|').Append(who != null ? who.Call : "")
+          .Append('|').Append(who != null ? Util.Milli(who.Batt) : -1).Append('|').Append(who != null ? Util.Milli(who.Integ) : -1).Append('\n');
+    }
+    if (T - facT < 10)
+        sb.Append("F|").Append(facSt).Append('|').Append(facProg).Append('|').Append(facBuilt).Append('|').Append(facDemand).Append('|').Append(facMsg).Append('\n');
+    sb.Append("P|").Append(repairOn ? 1 : 0).Append('|').Append(rearmOn ? 1 : 0).Append('|').Append(charging)
+      .Append('|').Append(mode == Proto.MODE_BASE ? maxChargeB : maxChargeC).Append('|').Append(Util.Milli(hubReserve))
+      .Append('|').Append(targetStock).Append('|').Append(liveStock).Append('|').Append(repairBlocks.Count).Append('|').Append(rearmBlocks.Count).Append('\n');
     for (int i = 0; i < evText.Count; i++) sb.Append("E|").Append((int)(T - evT[i])).Append('|').Append(evText[i]).Append('\n');
     IGC.SendBroadcastMessage(net.TSnap, sb.ToString(), TransmissionDistance.CurrentConstruct);
 }
@@ -805,6 +1000,8 @@ void BuildEcho()
     e.Append("Mode: ").Append(Proto.ModeName(mode)).Append(" (setting ").Append(Proto.ModeName(cfgMode)).Append(")\n");
     e.Append("Drones: ").Append(online).Append(" online / ").Append(reg.Count).Append("   Docks free: ").Append(docks.Free()).Append('/').Append(docks.List.Count).Append('\n');
     e.Append("Formation: ").Append(mode == Proto.MODE_BASE ? formB : formC).Append(' ').Append((int)spacing).Append("m   Auto-RTB: ").Append(autoRtb ? "on" : "off").Append('\n');
+    if (jumpState != Proto.JUMP_NONE) e.Append(jumpState == Proto.JUMP_PREP ? "JUMP PREP: waiting for drones to dock\n" : "JUMP READY\n");
+    if (targetStock > 0) e.Append("Stock ").Append(liveStock).Append('/').Append(targetStock).Append("   Factory: ").Append(T - facT < 10 ? Proto.FactoryName(facSt) : "no link").Append('\n');
     e.Append("Alert: ").Append(Proto.AlertName(alert)).Append(alertOverride >= 0 ? " (forced)" : " (auto)")
      .Append("   Defense: ").Append(defense ? "on" : "off").Append(safe ? "   SAFE" : "")
      .Append("   Turrets: ").Append(hubTurrets.Count).Append("  Alert sensors: ").Append(alertSensors.Count).Append('\n');

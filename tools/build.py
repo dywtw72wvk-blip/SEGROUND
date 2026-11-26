@@ -19,7 +19,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 DIST = ROOT / "dist"
 STUBS = ROOT / "tools" / "stubs" / "SEStubs.cs"
-VERSION = "0.2.0-phase2"
+VERSION = "0.3.0-phase3"
 PB_CHAR_LIMIT = 100_000
 
 SHARED = ["Shared/Proto.cs", "Shared/Util.cs", "Shared/Cfg.cs", "Shared/Net.cs", "Shared/Frame.cs"]
@@ -27,6 +27,7 @@ SCRIPTS = {
     "HubCore": ["HubCore/Program.cs", "HubCore/Drone.cs", "HubCore/Docks.cs", "HubCore/Formation.cs"] + SHARED,
     "HubUI": ["HubUI/Program.cs", "HubUI/Draw.cs"] + SHARED,
     "Drone": ["Drone/Program.cs", "Drone/Flight.cs"] + SHARED + ["Shared/Telemetry.cs"],
+    "Factory": ["Factory/Program.cs"] + SHARED,
 }
 
 USINGS = """using System;

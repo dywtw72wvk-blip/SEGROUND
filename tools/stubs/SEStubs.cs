@@ -291,7 +291,11 @@ namespace Sandbox.ModAPI.Ingame
     public interface IMyGasTank : IMyFunctionalBlock { double FilledRatio { get; } float Capacity { get; } }
     public interface IMyCargoContainer : IMyTerminalBlock { }
     public interface IMyRadioAntenna : IMyFunctionalBlock { bool EnableBroadcasting { get; set; } float Radius { get; set; } }
-    public interface IMyLargeTurretBase : IMyFunctionalBlock { bool HasTarget { get; } }
+    public interface IMyUserControllableGun : IMyFunctionalBlock { }
+    public interface IMyLargeTurretBase : IMyUserControllableGun { bool HasTarget { get; } }
+    public interface IMyProjector : IMyFunctionalBlock { bool IsProjecting { get; } int RemainingBlocks { get; } int TotalBlocks { get; } }
+    public interface IMyShipWelder : IMyFunctionalBlock { }
+    public interface IMyJumpDrive : IMyFunctionalBlock { }
     public struct MyDetectedEntityInfo { public long EntityId; public VRage.Game.MyRelationsBetweenPlayerAndBlock Relationship; public bool IsEmpty() { return EntityId == 0; } }
     public interface IMySensorBlock : IMyFunctionalBlock { void DetectedEntities(List<MyDetectedEntityInfo> entities); }
 
@@ -311,6 +315,7 @@ namespace SpaceEngineers.Game.ModAPI.Ingame
     using Sandbox.ModAPI.Ingame;
     public interface IMyLandingGear : IMyFunctionalBlock { bool IsLocked { get; } }
     public interface IMyTimerBlock : IMyFunctionalBlock { void Trigger(); void StartCountdown(); }
+    public interface IMyShipMergeBlock : IMyFunctionalBlock { bool IsConnected { get; } }
 }
 
 namespace VRage.Game

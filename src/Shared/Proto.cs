@@ -3,7 +3,7 @@
 // ============================================================================
 static class Proto
 {
-    public const int Version = 2;   // v2: NAV carries patrol phase/rate; ESCORT carries engage/leash/patrol
+    public const int Version = 3;   // v3: status carries ammo (v2: NAV patrol phase/rate; ESCORT engage/leash/patrol)
 
     // Message types (header Item4)
     public const int M_NAV = 1, M_HELLO = 2, M_STS = 3, M_ORD = 4;
@@ -27,6 +27,15 @@ static class Proto
 
     // Hub alert levels
     public const int ALERT_GREEN = 0, ALERT_YELLOW = 1, ALERT_RED = 2;
+
+    // Carrier jump interlock
+    public const int JUMP_NONE = 0, JUMP_PREP = 1, JUMP_READY = 2;
+
+    // Factory states
+    public const int FAC_IDLE = 0, FAC_BUILDING = 1, FAC_SECURE = 2, FAC_RELEASE = 3, FAC_BAYBUSY = 4,
+                     FAC_STALLED = 5, FAC_ERROR = 6, FAC_OFF = 7;
+    static readonly string[] facs = { "IDLE", "BUILDING", "SECURING", "RELEASING", "BAY BUSY", "WAITING PARTS", "ERROR", "OFF" };
+    public static string FactoryName(int s) { return s >= 0 && s < facs.Length ? facs[s] : "?"; }
 
     static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
                                         "APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED" };

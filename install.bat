@@ -96,9 +96,10 @@ echo Installing scripts from: %SRC%
 call :install "Fleet Hub Core" HubCore.cs || goto :fail
 call :install "Fleet Hub UI"   HubUI.cs   || goto :fail
 call :install "Fleet Drone"    Drone.cs   || goto :fail
+call :install "Fleet Factory"  Factory.cs || goto :fail
 
 rem Put the scripts straight into programmable blocks in saved worlds and
-rem blueprints (blocks named [Fleet Core] / [Fleet UI] / [Fleet Drone], or
+rem blueprints (blocks named [Fleet Core] / [Fleet UI] / [Fleet Drone] / [Fleet Factory], or
 rem already running a Fleet script). Paths go via env vars so spaces and
 rem brackets in folder names are safe.
 set "FLEET_DIST=%SRC%"
@@ -112,7 +113,7 @@ echo.
 echo ================================================
 echo  Done.
 echo ================================================
-echo Programmable blocks named [Fleet Core], [Fleet UI] or [Fleet Drone] in your
+echo Programmable blocks named [Fleet Core], [Fleet UI], [Fleet Drone] or [Fleet Factory] in your
 echo saved worlds and blueprints now run the latest scripts: just load the world.
 echo For any other block: Edit, Browse Scripts, pick a "Fleet" script.
 echo To update later, close the game and run this installer again.
