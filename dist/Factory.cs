@@ -240,15 +240,19 @@ O_DOCK = 5, O_UNDOCK = 6, O_STOP = 7,
 O_SEARCH = 8,
 O_ATTACK = 9,
 O_LOITER = 10,
-O_INTERCEPT = 11;
+O_INTERCEPT = 11,
+O_MINE = 12;
 public const int MODE_AUTO = 0, MODE_CARRIER = 1, MODE_BASE = 2;
 public const int S_BOOT = 0, S_UNPROV = 1, S_REGISTERING = 2, S_IDLE = 3, S_HOLD = 4,
 S_ESCORT = 5, S_GOTO = 6, S_APPROACH = 7, S_FINAL = 8, S_DOCKED = 9,
 S_UNDOCKING = 10, S_LINKLOST = 11, S_ERROR = 12, S_PATROL = 13, S_ENGAGED = 14,
-S_RECON = 15, S_ATTACK = 16, S_LOITER = 17, S_INTERCEPT = 18;
+S_RECON = 15, S_ATTACK = 16, S_LOITER = 17, S_INTERCEPT = 18,
+S_TRANSIT = 19, S_BORE = 20, S_ASCEND = 21;
 public const int F_DOCKED = 1, F_WANT_RTB = 2, F_LINKLOST = 4, F_NO_THRUST = 8, F_ARRIVED = 16,
 F_ENGAGED = 32,
-F_CONTACT = 64;
+F_CONTACT = 64,
+F_FULL = 128,
+F_DONE = 256;
 public const int ALERT_GREEN = 0, ALERT_YELLOW = 1, ALERT_RED = 2;
 public const int JUMP_NONE = 0, JUMP_PREP = 1, JUMP_READY = 2;
 public const int FAC_IDLE = 0, FAC_BUILDING = 1, FAC_SECURE = 2, FAC_RELEASE = 3, FAC_BAYBUSY = 4,
@@ -256,8 +260,8 @@ FAC_STALLED = 5, FAC_ERROR = 6, FAC_OFF = 7;
 static readonly string[] facs = { "IDLE", "BUILDING", "SECURING", "RELEASING", "BAY BUSY", "WAITING PARTS", "ERROR", "OFF" };
 public static string FactoryName(int s) { return s >= 0 && s < facs.Length ? facs[s] : "?"; }
 static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
-"APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT" };
-static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT" };
+"APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT", "TRANSIT", "BORE", "ASCEND" };
+static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE" };
 static readonly string[] modes = { "AUTO", "CARRIER", "BASE" };
 static readonly string[] alerts = { "GREEN", "YELLOW", "RED" };
 public static string StateName(int s) { return s >= 0 && s < states.Length ? states[s] : "?"; }

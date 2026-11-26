@@ -36,6 +36,7 @@ class Drone
     public double Miss = 1e11;   // dive: closest approach to the target so far (1e11 = not diving)
     public Vector3D MissOff, MissTo, From;
     public bool Passed;
+    public int Dep = -1, Shaft = -1;   // mining: deposit and shaft being worked
 
     public bool Docked { get { return (Flags & Proto.F_DOCKED) != 0; } }
     public bool Acked { get { return Seq == 0 || Ack == Seq; } }

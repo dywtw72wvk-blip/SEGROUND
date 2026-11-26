@@ -8,6 +8,11 @@
 // (turrets, weapons, AI combat blocks) and fires [Engage] timers. In
 // EngageMode=AI it hands flight to the vanilla AI blocks inside a leash around
 // its station, then takes control back. The fighting itself is vanilla.
+// Miner role (a grid with drills, or Role=Miner): O_MINE bores one shaft. Flies over the shaft
+// axis, lowers itself with the drills on at BoreSpeed, holding the axis, until its cargo is full,
+// the shaft reaches the depth the hub asked for (or MaxDepth below the surface), or a stretch of
+// shaft past the deposit gives no ore; then climbs out and reports F_FULL / F_DONE and waits for
+// the hub (a pad, or the next shaft). Stone goes out through connectors tagged [Eject].
 // Arguments: provision | reset | stop | rescan
 // ============================================================================
 const string SEC = "Drone";
@@ -35,6 +40,10 @@ readonly List<IMyWarhead> heads = new List<IMyWarhead>();             // termina
 readonly List<IMyOffensiveCombatBlock> aiOff = new List<IMyOffensiveCombatBlock>();   // intercept: AI lock (Intercept pattern)
 readonly List<IMyFlightMovementBlock> aiFly = new List<IMyFlightMovementBlock>();     // intercept: AI flies (off otherwise)
 readonly Wc wc = new Wc();                                                        // WeaponCore threats (spotter's turret)
+readonly List<IMyShipDrill> drills = new List<IMyShipDrill>();                    // miner
+readonly List<IMyShipConnector> eject = new List<IMyShipConnector>();             // miner: [Eject] stone throwers
+readonly List<IMyTerminalBlock> mInv = new List<IMyTerminalBlock>();              // miner: cargo + drill inventories
+readonly List<MyInventoryItem> mItems = new List<MyInventoryItem>();
 
 // --- config
 int netId;
@@ -43,6 +52,7 @@ string engageMode = "STATION", combatTag = "[Combat]", engTag = "[Engage]", disT
 double maxSpeed, dockSpeed, approach, rtbBatt, linkTimeout, clearance, reconSpeed, minAlt, standoff,
        lidarRange, armDist, fuse, cone, weave, lidarStep, lidarSwath, lidarRate, rays, ringRate, handoff, ringT0;
 bool provisioned, combatIdleOff = true, inFactory, targetNeutral;
+double boreSpeed, fullAt, mineBatt, noOreRun;      // miner
 
 // --- runtime state
 double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince, atkT, nextCon;
@@ -52,6 +62,9 @@ MyDetectedEntityInfo held; double heldSize; int heldN;          // contact seen 
 bool reconBack;                                                  // search: on the way back along the track
 long atkId; bool handed;                          // attack target; intercept: AI has the controls
 Vector3D atkAz;                                   // attack: chosen approach azimuth (horizontal, from target)
+// miner: shaft progress along the axis (z = height of the drill tips above the order's axis point)
+double zCmd, zTop, zCheck, oreCheck, oreVol, nextOre, mineT;
+bool mineFull, mineDone, mineHome, boring;
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
 bool registered, controlling, arrived, combatOn, leashBreak;
 long hubAddr;
@@ -115,14 +128,20 @@ void LoadConfig()
     key = cfg.S("Key", "");
     // blueprints drop Custom Data on paste: a PB or grid named "...Spotter..." defaults to Role=Spotter
     bool spot = Me.CustomName.Contains("Spotter") || Me.CubeGrid.CustomName.Contains("Spotter");
-    role = cfg.S("Role", spot ? "Spotter" : "Buster");
+    drills.Clear(); GridTerminalSystem.GetBlocksOfType(drills, b => b.IsSameConstructAs(Me));
+    bool miner = drills.Count > 0 || Me.CustomName.Contains("Miner");
+    role = cfg.S("Role", spot ? "Spotter" : miner ? "Miner" : "Buster");
+    boreSpeed = cfg.D("BoreSpeed", 0.8);              // miner: descent rate with the drills cutting (m/s)
+    fullAt = cfg.D("FullAt", 0.92);                  // miner: cargo fill that ends a trip
+    mineBatt = cfg.D("MineReserve", 0.35);           // miner: battery that ends a trip (climb out, go home)
+    noOreRun = cfg.D("NoOreRun", 6);                 // miner: metres of shaft past the deposit with no ore = done
     perfMode = cfg.S("Perf", "Normal").ToUpper();
-    maxSpeed = cfg.D("MaxSpeed", 100);
+    maxSpeed = cfg.D("MaxSpeed", miner ? 40 : 100);
     dockSpeed = cfg.D("DockSpeed", 1.5);
     approach = cfg.D("ApproachDistance", 25);
     clearance = cfg.D("Clearance", 15);
     reconSpeed = cfg.D("ReconSpeed", spot ? 35 : 60); // search: cruise speed while sweeping
-    minAlt = cfg.D("MinAltitude", 150);              // keep at least this far above the surface on S&D
+    minAlt = cfg.D("MinAltitude", miner ? 25 : 150);              // keep at least this far above the surface on S&D
     standoff = cfg.D("RingDistance", 2800);          // death ring distance from the target (hub sends its own)
     cone = cfg.D("RingCone", 20);                    // ring angle off vertical over the target (degrees)
     ringRate = cfg.D("RingRate", 2);                 // ring rotation (degrees per second)
@@ -164,6 +183,7 @@ void Scan()
     blocks.Clear();
     GridTerminalSystem.GetBlocksOfType(blocks, b => b.IsSameConstructAs(Me));
     thr.Clear(); gyr.Clear(); conns.Clear(); combat.Clear(); tEng.Clear(); tDis.Clear(); turrets.Clear(); cams.Clear(); heads.Clear(); aiOff.Clear(); aiFly.Clear();
+    drills.Clear(); eject.Clear(); mInv.Clear();
     if (!wc.Ok) wc.Init(Me);
     ctl = null; conn = null; ant = null;
     IMyShipController anyCtl = null;
@@ -187,7 +207,10 @@ void Scan()
             if (anyCtl == null) anyCtl = c;
             continue;
         }
-        var k = b as IMyShipConnector; if (k != null) { conns.Add(k); continue; }
+        var dr = b as IMyShipDrill; if (dr != null) { drills.Add(dr); mInv.Add(dr); continue; }
+        if (b is IMyCargoContainer) mInv.Add(b);
+        var k = b as IMyShipConnector;
+        if (k != null) { if (b.CustomName.Contains("[Eject]")) { eject.Add(k); if (!k.ThrowOut) k.ThrowOut = true; } else conns.Add(k); continue; }
         var a = b as IMyRadioAntenna; if (a != null && (ant == null || a.IsWorking)) ant = a;
     }
     if (ctl == null) ctl = anyCtl;
@@ -209,8 +232,9 @@ void Scan()
     if (gyr.Count == 0) w.Append("ERROR: no gyroscopes.\n");
     if (conn == null) w.Append("WARN: no connector" + (connTag.Length > 0 ? " tagged " + connTag : "") + ": cannot dock.\n");
     if (ant == null) w.Append("WARN: no antenna: no hub link.\n");
-    if (cams.Count == 0 && turrets.Count == 0) w.Append("WARN: no camera: cannot search for targets.\n");
-    else if (!ant.IsWorking || !ant.EnableBroadcasting) w.Append("WARN: antenna off or not broadcasting.\n");
+    if (ant != null && (!ant.IsWorking || !ant.EnableBroadcasting)) w.Append("WARN: antenna off or not broadcasting.\n");
+    if (role.ToUpper() == "MINER") { if (drills.Count == 0) w.Append("ERROR: Role=Miner but no drills.\n"); }
+    else if (cams.Count == 0 && turrets.Count == 0) w.Append("WARN: no camera: cannot search for targets.\n");
     if (engageMode == "AI" && combat.Count == 0 && tEng.Count == 0) w.Append("WARN: EngageMode=AI but no " + combatTag + " blocks or " + engTag + " timers.\n");
     warn = w.ToString();
 }
@@ -229,6 +253,7 @@ void Resume()
         case Proto.O_ATTACK: atkT = T; atkId = tId; Enter(Proto.S_ATTACK); SetCombat(true); break;
         case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
         case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
+        case Proto.O_MINE: StartMine(); break;
         case Proto.O_UNDOCK:
             if (pTask != Proto.O_NONE) Enter(Proto.S_UNDOCKING);
             else { CaptureHold(); Enter(Proto.S_HOLD); }
@@ -348,6 +373,9 @@ void SendStatus()
     if (arrived) f |= Proto.F_ARRIVED;
     if (combatOn) f |= Proto.F_ENGAGED;
     if (!docked && T - detT < 3) f |= Proto.F_CONTACT;
+    if (mineFull) f |= Proto.F_FULL;
+    if (mineDone) f |= Proto.F_DONE;
+    if (mineHome && !docked) f |= Proto.F_WANT_RTB;
     long dockId = docked && conn.OtherConnector != null ? conn.OtherConnector.EntityId : 0;
     net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt, tel.H2, tel.Cargo, tel.Integ, tel.Ammo, f);
 }
@@ -356,6 +384,11 @@ void SendStatus()
 void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
     bool connected = Connected();
+    if (state == Proto.S_BORE || state == Proto.S_ASCEND)
+    {
+        if (code == Proto.O_MINE && (a - tA).LengthSquared() < 0.01) { Store(code, a, b, c, id); return; }   // same shaft, resent
+        if (code != Proto.O_STOP) { task = code; SetPending(code, a, b, c, id); if (state == Proto.S_BORE) Enter(Proto.S_ASCEND); return; }
+    }
     switch (code)
     {
         case Proto.O_ESCORT:
@@ -365,6 +398,7 @@ void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
         case Proto.O_ATTACK:
         case Proto.O_LOITER:
         case Proto.O_INTERCEPT:
+        case Proto.O_MINE:
             if (connected) { task = code; SetPending(code, a, b, c, id); BeginUndock(); }
             else if (state == Proto.S_UNDOCKING) { task = code; SetPending(code, a, b, c, id); }
             else Execute(code, a, b, c, id);
@@ -400,6 +434,7 @@ void SetPending(int code, Vector3D a, Vector3D b, Vector3D c, long id) { pTask =
 void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
     Store(code, a, b, c, id);
+    mineFull = mineDone = mineHome = false;
     arrived = false;
     switch (code)
     {
@@ -425,6 +460,7 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
             atkT = T; atkId = id;
             if (state != Proto.S_INTERCEPT) { handed = false; Enter(Proto.S_INTERCEPT); }
             break;
+        case Proto.O_MINE: StartMine(); break;
     }
 }
 
@@ -465,7 +501,7 @@ void Enter(int s)
 {
     bool flying = s == Proto.S_HOLD || s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_GOTO || s == Proto.S_APPROACH ||
                   s == Proto.S_FINAL || s == Proto.S_UNDOCKING || s == Proto.S_LINKLOST || s == Proto.S_RECON || s == Proto.S_ATTACK ||
-                  s == Proto.S_LOITER || s == Proto.S_INTERCEPT;
+                  s == Proto.S_LOITER || s == Proto.S_INTERCEPT || s == Proto.S_TRANSIT || s == Proto.S_BORE || s == Proto.S_ASCEND;
     bool station = s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_ENGAGED;
     if (!station) { leashBreak = false; if (combatOn) SetCombat(false); }
     if (s == Proto.S_DOCKED) { fl.Release(true); DockedPower(true); controlling = false; }
@@ -475,6 +511,7 @@ void Enter(int s)
     fl.Freeze = s == Proto.S_FINAL;
     if (s != Proto.S_ATTACK && s != Proto.S_INTERCEPT) foreach (var w in heads) if (!w.Closed && w.IsArmed) w.IsArmed = false;
     if (s != Proto.S_INTERCEPT && handed) { handed = false; foreach (var b in aiFly) if (!b.Closed) b.Enabled = false; }
+    if (s != Proto.S_BORE && s != Proto.S_ASCEND) Drills(false);
     state = s; stateT = T;
 }
 
@@ -527,6 +564,11 @@ void Step()
             break;
         case Proto.S_INTERCEPT:
             FlyIntercept();
+            break;
+        case Proto.S_TRANSIT:
+        case Proto.S_BORE:
+        case Proto.S_ASCEND:
+            FlyMine();
             break;
         case Proto.S_LINKLOST:
             FlyHoldAt(holdPos);
@@ -927,6 +969,122 @@ static bool SegHits(Vector3D p, Vector3D t, Vector3D h)
         if (t0 > t1) return false;
     }
     return true;
+}
+
+// ---------------------------------------------------------------- mining
+// O_MINE: tA = shaft axis point at the deposit's depth, tB = up * metres to dig past it,
+// tC = (shaft, shafts, max depth below the surface)
+void StartMine()
+{
+    zCmd = 1e9; zTop = 1e9; zCheck = 1e9; boring = false;
+    Enter(Proto.S_TRANSIT);
+}
+
+Vector3D MineUp() { return tB.LengthSquared() > 1e-6 ? Util.Norm(tB) : UpRef(ctl.WorldMatrix.Up); }
+
+// height of the drill tips above the axis point (drills point along their own Forward)
+double TipZ(Vector3D u)
+{
+    double lo = 1e9;
+    foreach (var d in drills) if (!d.Closed) lo = Math.Min(lo, Vector3D.Dot(d.GetPosition() + d.WorldMatrix.Forward * d.CubeGrid.GridSize * 3 - tA, u));
+    return lo < 1e8 ? lo : Vector3D.Dot(fl.Pos - tA, u);
+}
+
+void Drills(bool on) { foreach (var d in drills) if (!d.Closed && d.Enabled != on) d.Enabled = on; }
+
+void FlyMine()
+{
+    Vector3D u = MineUp();
+    double z = TipZ(u), tipOff = Vector3D.Dot(fl.Pos - tA, u) - z;   // CoM height above the tips
+    Vector3D axis = tA - u * Vector3D.Dot(tA, u);                      // the axis, as a point minus its height
+    Vector3D lat = fl.Pos - u * Vector3D.Dot(fl.Pos, u) - axis;        // horizontal offset from the axis
+    double e; bool elev = ctl.TryGetPlanetElevation(MyPlanetElevation.Surface, out e);
+    double dt = Util.Clamp(T - mineT, 0, 0.2); mineT = T;
+    if (T >= nextOre) { OreScan(); if (state != Proto.S_TRANSIT) Eject(); nextOre = T + 1; }
+
+    // hold the drills straight down (whatever way the controller faces), keep the heading
+    MatrixD dm = drills.Count > 0 && !drills[0].Closed ? drills[0].WorldMatrix : ctl.WorldMatrix;
+    Vector3D fw = drills.Count > 0 ? dm.Up : dm.Forward;
+    fw -= u * Vector3D.Dot(fw, u);
+    if (fw.LengthSquared() > 0.01) holdFwd = Util.Norm(fw);
+    if (drills.Count > 0) fl.Aim(dm, -u, holdFwd); else fl.Aim(dm, holdFwd, u);
+
+    if (state == Proto.S_TRANSIT)
+    {
+        // over the axis at our height (raised to MinAltitude over the ground), around the carrier
+        Vector3D dest = tA + u * Math.Max(Vector3D.Dot(fl.Pos - tA, u), 20);
+        dest = Lift(dest);
+        fl.FlyTo(NavFresh() ? Avoid(dest, hub.Matrix(T)) : dest, Vector3D.Zero, maxSpeed);
+        if (lat.Length() < 1.5 && fl.Vel.Length() < 1) { zCmd = z; Enter(Proto.S_BORE); }
+        return;
+    }
+    if (state == Proto.S_BORE)
+    {
+        // fast down to just above the ground, then cut at BoreSpeed; never command more than
+        // 1.5 m below where the tips really are (the drills set the pace, the ship just leans on them)
+        double clear = elev ? e - (Vector3D.Dot(ctl.GetPosition() - tA, u) - z) : 0;   // tips above the ground
+        if (!boring && (!elev || clear < 3)) { boring = true; Drills(true); zTop = z + Math.Max(0, clear); zCheck = Math.Min(z, 0); oreCheck = oreVol; }
+        double spd = boring ? boreSpeed : 3;
+        zCmd = Math.Max(zCmd - spd * dt, z - (boring ? 1.5 : 4));
+        fl.FlyTo(tA + u * (zCmd + tipOff), Vector3D.Zero, Math.Max(spd, 0.5));
+        // shaft progress past the deposit's centre: a NoOreRun stretch with no new ore ends the shaft
+        if (boring && z < zCheck - noOreRun)
+        {
+            if (oreVol - oreCheck < 0.02 && z < 0) { mineDone = true; Enter(Proto.S_ASCEND); return; }
+            zCheck = z; oreCheck = oreVol;
+        }
+        bool full = tel.Cargo >= fullAt, low = tel.Batt >= 0 && tel.Batt < mineBatt;
+        bool deep = z <= -tB.Length() || (zTop < 1e8 && zTop - z >= tC.Z && tC.Z > 1);
+        if (full || low || deep)
+        {
+            mineFull = full; mineHome = low && !full; mineDone = deep && !full && !low;
+            Enter(Proto.S_ASCEND);
+        }
+        return;
+    }
+    // ASCEND: straight up the shaft with the drills turning, to 10 m over its mouth
+    if (zTop > 1e8) zTop = z;                     // left before reaching the ground: climb from here
+    double top = zTop + 10;
+    fl.FlyTo(tA + u * (top + tipOff), Vector3D.Zero, 4);
+    if (z > top - 1.5)
+    {
+        // an order that came in while we were in the shaft runs now that we're clear of it
+        if (pTask != Proto.O_NONE) { int c = pTask; pTask = Proto.O_NONE; Execute(c, pA, pB, pC, pId); return; }
+        if (!mineFull && !mineDone && !mineHome) mineDone = true;
+        CaptureHold(); Enter(Proto.S_HOLD);
+    }
+}
+
+// ore volume aboard (cargo and drills), for the no-ore check
+void OreScan()
+{
+    double v = 0;
+    foreach (var b in mInv)
+    {
+        if (b.Closed) continue;
+        mItems.Clear();
+        b.GetInventory(0).GetItems(mItems, it => it.Type.TypeId == "MyObjectBuilder_Ore" && it.Type.SubtypeId != "Stone");
+        foreach (var it in mItems) v += (float)it.Amount * 0.00037;   // ~0.37 L per kg
+    }
+    oreVol = v;
+}
+
+// stone into the [Eject] connectors (set to throw out), up to 2 t a second each
+void Eject()
+{
+    foreach (var ej in eject)
+    {
+        if (ej.Closed) continue;
+        var dst = ej.GetInventory(0);
+        foreach (var b in mInv)
+        {
+            if (b.Closed) continue;
+            var src = b.GetInventory(0);
+            mItems.Clear();
+            src.GetItems(mItems, it => it.Type.SubtypeId == "Stone");
+            if (mItems.Count > 0) { src.TransferItemTo(dst, mItems[0], 2000); break; }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- helpers

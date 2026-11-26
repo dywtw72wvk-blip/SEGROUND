@@ -85,7 +85,7 @@ namespace VRageMath
 
 namespace VRage
 {
-    public struct MyFixedPoint { public static explicit operator float(MyFixedPoint v) { return 0; } }
+    public struct MyFixedPoint { public static explicit operator float(MyFixedPoint v) { return 0; } public static implicit operator MyFixedPoint(int v) { return new MyFixedPoint(); } }
 
     public struct MyTuple<T1, T2>
     {
@@ -140,7 +140,14 @@ namespace VRage.Game.ModAPI.Ingame
         Vector3I Max { get; }
     }
 
-    public interface IMyInventory { MyFixedPoint CurrentVolume { get; } MyFixedPoint MaxVolume { get; } }
+    public struct MyItemType { public string TypeId { get { return ""; } } public string SubtypeId { get { return ""; } } }
+    public struct MyInventoryItem { public MyItemType Type; public MyFixedPoint Amount; public uint ItemId; }
+    public interface IMyInventory
+    {
+        MyFixedPoint CurrentVolume { get; } MyFixedPoint MaxVolume { get; }
+        void GetItems(List<MyInventoryItem> items, Func<MyInventoryItem, bool> filter = null);
+        bool TransferItemTo(IMyInventory dst, MyInventoryItem item, MyFixedPoint? amount = null);
+    }
 
     public struct SerializableDefinitionId { public string SubtypeName { get { return ""; } } }
 
@@ -269,6 +276,9 @@ namespace Sandbox.ModAPI.Ingame
         Vector2 SurfaceSize { get; }
         Vector2 TextureSize { get; }
         MySpriteDrawFrame DrawFrame();
+        float FontSize { get; set; }
+        string Font { get; set; }
+        bool WriteText(string value, bool append = false);
     }
 
     public interface IMyTextSurfaceProvider { int SurfaceCount { get; } IMyTextSurface GetSurface(int index); }
@@ -297,12 +307,15 @@ namespace Sandbox.ModAPI.Ingame
     {
         MyShipConnectorStatus Status { get; }
         IMyShipConnector OtherConnector { get; }
+        bool ThrowOut { get; set; }
         void Connect();
         void Disconnect();
     }
     public interface IMyBatteryBlock : IMyFunctionalBlock { float CurrentStoredPower { get; } float MaxStoredPower { get; } ChargeMode ChargeMode { get; set; } }
     public interface IMyGasTank : IMyFunctionalBlock { double FilledRatio { get; } float Capacity { get; } }
     public interface IMyCargoContainer : IMyTerminalBlock { }
+    public interface IMyShipDrill : IMyFunctionalBlock { }
+    public interface IMyOreDetector : IMyFunctionalBlock { float Range { get; } }
     public interface IMyRadioAntenna : IMyFunctionalBlock { bool EnableBroadcasting { get; set; } float Radius { get; set; } }
     public interface IMyUserControllableGun : IMyFunctionalBlock { }
     public interface IMyLargeTurretBase : IMyUserControllableGun { bool HasTarget { get; } MyDetectedEntityInfo GetTargetedEntity(); }

@@ -23,12 +23,17 @@ readonly List<IMyWarhead> heads = new List<IMyWarhead>();
 readonly List<IMyOffensiveCombatBlock> aiOff = new List<IMyOffensiveCombatBlock>();
 readonly List<IMyFlightMovementBlock> aiFly = new List<IMyFlightMovementBlock>();
 readonly Wc wc = new Wc();
+readonly List<IMyShipDrill> drills = new List<IMyShipDrill>();
+readonly List<IMyShipConnector> eject = new List<IMyShipConnector>();
+readonly List<IMyTerminalBlock> mInv = new List<IMyTerminalBlock>();
+readonly List<MyInventoryItem> mItems = new List<MyInventoryItem>();
 int netId;
 string key = "", role = "Buster", perfMode = "NORMAL", connTag = "", ctlTag = "";
 string engageMode = "STATION", combatTag = "[Combat]", engTag = "[Engage]", disTag = "[Disengage]";
 double maxSpeed, dockSpeed, approach, rtbBatt, linkTimeout, clearance, reconSpeed, minAlt, standoff,
 lidarRange, armDist, fuse, cone, weave, lidarStep, lidarSwath, lidarRate, rays, ringRate, handoff, ringT0;
 bool provisioned, combatIdleOff = true, inFactory, targetNeutral;
+double boreSpeed, fullAt, mineBatt, noOreRun;
 double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince, atkT, nextCon;
 int wp, scanI;
 MyDetectedEntityInfo det; double detT = -1e9, detSize;
@@ -36,6 +41,8 @@ MyDetectedEntityInfo held; double heldSize; int heldN;
 bool reconBack;
 long atkId; bool handed;
 Vector3D atkAz;
+double zCmd, zTop, zCheck, oreCheck, oreVol, nextOre, mineT;
+bool mineFull, mineDone, mineHome, boring;
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
 bool registered, controlling, arrived, combatOn, leashBreak;
 long hubAddr;
@@ -92,14 +99,20 @@ cfg = new Cfg(Me, SEC);
 netId = cfg.I("NetId", 0);
 key = cfg.S("Key", "");
 bool spot = Me.CustomName.Contains("Spotter") || Me.CubeGrid.CustomName.Contains("Spotter");
-role = cfg.S("Role", spot ? "Spotter" : "Buster");
+drills.Clear(); GridTerminalSystem.GetBlocksOfType(drills, b => b.IsSameConstructAs(Me));
+bool miner = drills.Count > 0 || Me.CustomName.Contains("Miner");
+role = cfg.S("Role", spot ? "Spotter" : miner ? "Miner" : "Buster");
+boreSpeed = cfg.D("BoreSpeed", 0.8);
+fullAt = cfg.D("FullAt", 0.92);
+mineBatt = cfg.D("MineReserve", 0.35);
+noOreRun = cfg.D("NoOreRun", 6);
 perfMode = cfg.S("Perf", "Normal").ToUpper();
-maxSpeed = cfg.D("MaxSpeed", 100);
+maxSpeed = cfg.D("MaxSpeed", miner ? 40 : 100);
 dockSpeed = cfg.D("DockSpeed", 1.5);
 approach = cfg.D("ApproachDistance", 25);
 clearance = cfg.D("Clearance", 15);
 reconSpeed = cfg.D("ReconSpeed", spot ? 35 : 60);
-minAlt = cfg.D("MinAltitude", 150);
+minAlt = cfg.D("MinAltitude", miner ? 25 : 150);
 standoff = cfg.D("RingDistance", 2800);
 cone = cfg.D("RingCone", 20);
 ringRate = cfg.D("RingRate", 2);
@@ -139,6 +152,7 @@ void Scan()
 blocks.Clear();
 GridTerminalSystem.GetBlocksOfType(blocks, b => b.IsSameConstructAs(Me));
 thr.Clear(); gyr.Clear(); conns.Clear(); combat.Clear(); tEng.Clear(); tDis.Clear(); turrets.Clear(); cams.Clear(); heads.Clear(); aiOff.Clear(); aiFly.Clear();
+drills.Clear(); eject.Clear(); mInv.Clear();
 if (!wc.Ok) wc.Init(Me);
 ctl = null; conn = null; ant = null;
 IMyShipController anyCtl = null;
@@ -162,7 +176,10 @@ if (ctlTag.Length > 0 ? b.CustomName.Contains(ctlTag) : c is IMyRemoteControl) c
 if (anyCtl == null) anyCtl = c;
 continue;
 }
-var k = b as IMyShipConnector; if (k != null) { conns.Add(k); continue; }
+var dr = b as IMyShipDrill; if (dr != null) { drills.Add(dr); mInv.Add(dr); continue; }
+if (b is IMyCargoContainer) mInv.Add(b);
+var k = b as IMyShipConnector;
+if (k != null) { if (b.CustomName.Contains("[Eject]")) { eject.Add(k); if (!k.ThrowOut) k.ThrowOut = true; } else conns.Add(k); continue; }
 var a = b as IMyRadioAntenna; if (a != null && (ant == null || a.IsWorking)) ant = a;
 }
 if (ctl == null) ctl = anyCtl;
@@ -180,8 +197,9 @@ if (thr.Count == 0) w.Append("ERROR: no thrusters.\n");
 if (gyr.Count == 0) w.Append("ERROR: no gyroscopes.\n");
 if (conn == null) w.Append("WARN: no connector" + (connTag.Length > 0 ? " tagged " + connTag : "") + ": cannot dock.\n");
 if (ant == null) w.Append("WARN: no antenna: no hub link.\n");
-if (cams.Count == 0 && turrets.Count == 0) w.Append("WARN: no camera: cannot search for targets.\n");
-else if (!ant.IsWorking || !ant.EnableBroadcasting) w.Append("WARN: antenna off or not broadcasting.\n");
+if (ant != null && (!ant.IsWorking || !ant.EnableBroadcasting)) w.Append("WARN: antenna off or not broadcasting.\n");
+if (role.ToUpper() == "MINER") { if (drills.Count == 0) w.Append("ERROR: Role=Miner but no drills.\n"); }
+else if (cams.Count == 0 && turrets.Count == 0) w.Append("WARN: no camera: cannot search for targets.\n");
 if (engageMode == "AI" && combat.Count == 0 && tEng.Count == 0) w.Append("WARN: EngageMode=AI but no " + combatTag + " blocks or " + engTag + " timers.\n");
 warn = w.ToString();
 }
@@ -199,6 +217,7 @@ case Proto.O_SEARCH: wp = 0; reconBack = false; Enter(Proto.S_RECON); break;
 case Proto.O_ATTACK: atkT = T; atkId = tId; Enter(Proto.S_ATTACK); SetCombat(true); break;
 case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
 case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
+case Proto.O_MINE: StartMine(); break;
 case Proto.O_UNDOCK:
 if (pTask != Proto.O_NONE) Enter(Proto.S_UNDOCKING);
 else { CaptureHold(); Enter(Proto.S_HOLD); }
@@ -306,12 +325,20 @@ if (!docked && !fl.HasThrust) f |= Proto.F_NO_THRUST;
 if (arrived) f |= Proto.F_ARRIVED;
 if (combatOn) f |= Proto.F_ENGAGED;
 if (!docked && T - detT < 3) f |= Proto.F_CONTACT;
+if (mineFull) f |= Proto.F_FULL;
+if (mineDone) f |= Proto.F_DONE;
+if (mineHome && !docked) f |= Proto.F_WANT_RTB;
 long dockId = docked && conn.OtherConnector != null ? conn.OtherConnector.EntityId : 0;
 net.SendStatus(hubAddr, role, state, task, ack, dockId, fl.Pos, fl.Vel, tel.Batt, tel.H2, tel.Cargo, tel.Integ, tel.Ammo, f);
 }
 void Apply(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
 bool connected = Connected();
+if (state == Proto.S_BORE || state == Proto.S_ASCEND)
+{
+if (code == Proto.O_MINE && (a - tA).LengthSquared() < 0.01) { Store(code, a, b, c, id); return; }
+if (code != Proto.O_STOP) { task = code; SetPending(code, a, b, c, id); if (state == Proto.S_BORE) Enter(Proto.S_ASCEND); return; }
+}
 switch (code)
 {
 case Proto.O_ESCORT:
@@ -321,6 +348,7 @@ case Proto.O_SEARCH:
 case Proto.O_ATTACK:
 case Proto.O_LOITER:
 case Proto.O_INTERCEPT:
+case Proto.O_MINE:
 if (connected) { task = code; SetPending(code, a, b, c, id); BeginUndock(); }
 else if (state == Proto.S_UNDOCKING) { task = code; SetPending(code, a, b, c, id); }
 else Execute(code, a, b, c, id);
@@ -351,6 +379,7 @@ void SetPending(int code, Vector3D a, Vector3D b, Vector3D c, long id) { pTask =
 void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
 {
 Store(code, a, b, c, id);
+mineFull = mineDone = mineHome = false;
 arrived = false;
 switch (code)
 {
@@ -375,6 +404,7 @@ case Proto.O_INTERCEPT:
 atkT = T; atkId = id;
 if (state != Proto.S_INTERCEPT) { handed = false; Enter(Proto.S_INTERCEPT); }
 break;
+case Proto.O_MINE: StartMine(); break;
 }
 }
 void CaptureHold()
@@ -409,7 +439,7 @@ void Enter(int s)
 {
 bool flying = s == Proto.S_HOLD || s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_GOTO || s == Proto.S_APPROACH ||
 s == Proto.S_FINAL || s == Proto.S_UNDOCKING || s == Proto.S_LINKLOST || s == Proto.S_RECON || s == Proto.S_ATTACK ||
-s == Proto.S_LOITER || s == Proto.S_INTERCEPT;
+s == Proto.S_LOITER || s == Proto.S_INTERCEPT || s == Proto.S_TRANSIT || s == Proto.S_BORE || s == Proto.S_ASCEND;
 bool station = s == Proto.S_ESCORT || s == Proto.S_PATROL || s == Proto.S_ENGAGED;
 if (!station) { leashBreak = false; if (combatOn) SetCombat(false); }
 if (s == Proto.S_DOCKED) { fl.Release(true); DockedPower(true); controlling = false; }
@@ -419,6 +449,7 @@ else if (!controlling) { fl.Engage(); controlling = true; }
 fl.Freeze = s == Proto.S_FINAL;
 if (s != Proto.S_ATTACK && s != Proto.S_INTERCEPT) foreach (var w in heads) if (!w.Closed && w.IsArmed) w.IsArmed = false;
 if (s != Proto.S_INTERCEPT && handed) { handed = false; foreach (var b in aiFly) if (!b.Closed) b.Enabled = false; }
+if (s != Proto.S_BORE && s != Proto.S_ASCEND) Drills(false);
 state = s; stateT = T;
 }
 void Step()
@@ -468,6 +499,11 @@ FlyLoiter();
 break;
 case Proto.S_INTERCEPT:
 FlyIntercept();
+break;
+case Proto.S_TRANSIT:
+case Proto.S_BORE:
+case Proto.S_ASCEND:
+FlyMine();
 break;
 case Proto.S_LINKLOST:
 FlyHoldAt(holdPos);
@@ -792,6 +828,100 @@ if (t0 > t1) return false;
 }
 return true;
 }
+void StartMine()
+{
+zCmd = 1e9; zTop = 1e9; zCheck = 1e9; boring = false;
+Enter(Proto.S_TRANSIT);
+}
+Vector3D MineUp() { return tB.LengthSquared() > 1e-6 ? Util.Norm(tB) : UpRef(ctl.WorldMatrix.Up); }
+double TipZ(Vector3D u)
+{
+double lo = 1e9;
+foreach (var d in drills) if (!d.Closed) lo = Math.Min(lo, Vector3D.Dot(d.GetPosition() + d.WorldMatrix.Forward * d.CubeGrid.GridSize * 3 - tA, u));
+return lo < 1e8 ? lo : Vector3D.Dot(fl.Pos - tA, u);
+}
+void Drills(bool on) { foreach (var d in drills) if (!d.Closed && d.Enabled != on) d.Enabled = on; }
+void FlyMine()
+{
+Vector3D u = MineUp();
+double z = TipZ(u), tipOff = Vector3D.Dot(fl.Pos - tA, u) - z;
+Vector3D axis = tA - u * Vector3D.Dot(tA, u);
+Vector3D lat = fl.Pos - u * Vector3D.Dot(fl.Pos, u) - axis;
+double e; bool elev = ctl.TryGetPlanetElevation(MyPlanetElevation.Surface, out e);
+double dt = Util.Clamp(T - mineT, 0, 0.2); mineT = T;
+if (T >= nextOre) { OreScan(); if (state != Proto.S_TRANSIT) Eject(); nextOre = T + 1; }
+MatrixD dm = drills.Count > 0 && !drills[0].Closed ? drills[0].WorldMatrix : ctl.WorldMatrix;
+Vector3D fw = drills.Count > 0 ? dm.Up : dm.Forward;
+fw -= u * Vector3D.Dot(fw, u);
+if (fw.LengthSquared() > 0.01) holdFwd = Util.Norm(fw);
+if (drills.Count > 0) fl.Aim(dm, -u, holdFwd); else fl.Aim(dm, holdFwd, u);
+if (state == Proto.S_TRANSIT)
+{
+Vector3D dest = tA + u * Math.Max(Vector3D.Dot(fl.Pos - tA, u), 20);
+dest = Lift(dest);
+fl.FlyTo(NavFresh() ? Avoid(dest, hub.Matrix(T)) : dest, Vector3D.Zero, maxSpeed);
+if (lat.Length() < 1.5 && fl.Vel.Length() < 1) { zCmd = z; Enter(Proto.S_BORE); }
+return;
+}
+if (state == Proto.S_BORE)
+{
+double clear = elev ? e - (Vector3D.Dot(ctl.GetPosition() - tA, u) - z) : 0;
+if (!boring && (!elev || clear < 3)) { boring = true; Drills(true); zTop = z + Math.Max(0, clear); zCheck = Math.Min(z, 0); oreCheck = oreVol; }
+double spd = boring ? boreSpeed : 3;
+zCmd = Math.Max(zCmd - spd * dt, z - (boring ? 1.5 : 4));
+fl.FlyTo(tA + u * (zCmd + tipOff), Vector3D.Zero, Math.Max(spd, 0.5));
+if (boring && z < zCheck - noOreRun)
+{
+if (oreVol - oreCheck < 0.02 && z < 0) { mineDone = true; Enter(Proto.S_ASCEND); return; }
+zCheck = z; oreCheck = oreVol;
+}
+bool full = tel.Cargo >= fullAt, low = tel.Batt >= 0 && tel.Batt < mineBatt;
+bool deep = z <= -tB.Length() || (zTop < 1e8 && zTop - z >= tC.Z && tC.Z > 1);
+if (full || low || deep)
+{
+mineFull = full; mineHome = low && !full; mineDone = deep && !full && !low;
+Enter(Proto.S_ASCEND);
+}
+return;
+}
+if (zTop > 1e8) zTop = z;
+double top = zTop + 10;
+fl.FlyTo(tA + u * (top + tipOff), Vector3D.Zero, 4);
+if (z > top - 1.5)
+{
+if (pTask != Proto.O_NONE) { int c = pTask; pTask = Proto.O_NONE; Execute(c, pA, pB, pC, pId); return; }
+if (!mineFull && !mineDone && !mineHome) mineDone = true;
+CaptureHold(); Enter(Proto.S_HOLD);
+}
+}
+void OreScan()
+{
+double v = 0;
+foreach (var b in mInv)
+{
+if (b.Closed) continue;
+mItems.Clear();
+b.GetInventory(0).GetItems(mItems, it => it.Type.TypeId == "MyObjectBuilder_Ore" && it.Type.SubtypeId != "Stone");
+foreach (var it in mItems) v += (float)it.Amount * 0.00037;
+}
+oreVol = v;
+}
+void Eject()
+{
+foreach (var ej in eject)
+{
+if (ej.Closed) continue;
+var dst = ej.GetInventory(0);
+foreach (var b in mInv)
+{
+if (b.Closed) continue;
+var src = b.GetInventory(0);
+mItems.Clear();
+src.GetItems(mItems, it => it.Type.SubtypeId == "Stone");
+if (mItems.Count > 0) { src.TransferItemTo(dst, mItems[0], 2000); break; }
+}
+}
+}
 bool Connected() { return conn != null && conn.Status == MyShipConnectorStatus.Connected; }
 bool NavFresh() { return hub.Valid && T - navT < linkTimeout; }
 void DockedPower(bool docked)
@@ -985,15 +1115,19 @@ O_DOCK = 5, O_UNDOCK = 6, O_STOP = 7,
 O_SEARCH = 8,
 O_ATTACK = 9,
 O_LOITER = 10,
-O_INTERCEPT = 11;
+O_INTERCEPT = 11,
+O_MINE = 12;
 public const int MODE_AUTO = 0, MODE_CARRIER = 1, MODE_BASE = 2;
 public const int S_BOOT = 0, S_UNPROV = 1, S_REGISTERING = 2, S_IDLE = 3, S_HOLD = 4,
 S_ESCORT = 5, S_GOTO = 6, S_APPROACH = 7, S_FINAL = 8, S_DOCKED = 9,
 S_UNDOCKING = 10, S_LINKLOST = 11, S_ERROR = 12, S_PATROL = 13, S_ENGAGED = 14,
-S_RECON = 15, S_ATTACK = 16, S_LOITER = 17, S_INTERCEPT = 18;
+S_RECON = 15, S_ATTACK = 16, S_LOITER = 17, S_INTERCEPT = 18,
+S_TRANSIT = 19, S_BORE = 20, S_ASCEND = 21;
 public const int F_DOCKED = 1, F_WANT_RTB = 2, F_LINKLOST = 4, F_NO_THRUST = 8, F_ARRIVED = 16,
 F_ENGAGED = 32,
-F_CONTACT = 64;
+F_CONTACT = 64,
+F_FULL = 128,
+F_DONE = 256;
 public const int ALERT_GREEN = 0, ALERT_YELLOW = 1, ALERT_RED = 2;
 public const int JUMP_NONE = 0, JUMP_PREP = 1, JUMP_READY = 2;
 public const int FAC_IDLE = 0, FAC_BUILDING = 1, FAC_SECURE = 2, FAC_RELEASE = 3, FAC_BAYBUSY = 4,
@@ -1001,8 +1135,8 @@ FAC_STALLED = 5, FAC_ERROR = 6, FAC_OFF = 7;
 static readonly string[] facs = { "IDLE", "BUILDING", "SECURING", "RELEASING", "BAY BUSY", "WAITING PARTS", "ERROR", "OFF" };
 public static string FactoryName(int s) { return s >= 0 && s < facs.Length ? facs[s] : "?"; }
 static readonly string[] states = { "BOOT", "UNPROV", "REGISTER", "IDLE", "HOLD", "ESCORT", "GOTO",
-"APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT" };
-static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT" };
+"APPROACH", "FINAL", "DOCKED", "UNDOCK", "NO LINK", "ERROR", "PATROL", "ENGAGED", "RECON", "ATTACK", "LOITER", "INTERCEPT", "TRANSIT", "BORE", "ASCEND" };
+static readonly string[] orders = { "-", "REG", "ESCORT", "HOLD", "GOTO", "DOCK", "UNDOCK", "STOP", "SEARCH", "ATTACK", "LOITER", "INTERCEPT", "MINE" };
 static readonly string[] modes = { "AUTO", "CARRIER", "BASE" };
 static readonly string[] alerts = { "GREEN", "YELLOW", "RED" };
 public static string StateName(int s) { return s >= 0 && s < states.Length ? states[s] : "?"; }

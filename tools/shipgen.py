@@ -92,7 +92,14 @@ B = {
     "l_antenna":   ("RadioAntenna", "LargeBlockRadioAntenna", "Large", (1, 6, 2), 3401.6, 0, False),
     "l_gatling":   ("LargeGatlingTurret", "", "Large", (3, 3, 3), 1428.0, 0, False),
     "l_camera":    ("CameraBlock", "LargeCameraBlock", "Large", (1, 1, 1), 92.0, 0, False),
+    # mining carrier
+    "l_container": ("CargoContainer", "LargeBlockLargeContainer", "Large", (3, 3, 3), 2593.6, 0, False),
+    "l_reactor_big": ("Reactor", "LargeBlockLargeGenerator", "Large", (3, 3, 3), 73795.0, 0, False),
+    "l_ore":       ("OreDetector", "LargeOreDetector", "Large", (1, 1, 2), 1545.0, 0, False),
+    "l_gear":      ("LandingGear", "LargeBlockLandingGear", "Large", (1, 2, 3), 3304.0, 0, False),
 }
+ORE_T_PER_M3 = 2.7            # ore and stone: ~0.37 L/kg
+LARGE_CONTAINER_M3 = 421.875  # large-grid Large Cargo Container at 1x block inventory
 
 
 def cross(a, b):
@@ -455,6 +462,70 @@ def carrier():
     return s
 
 
+# ======================================================================
+# FS Mining Carrier Atmo (large grid): carries 4 vertical miners (designed
+# around the SCAM Min3r 69R Atmospheric: 40 t, 5.5 x 7 x 5.5 m, connector on
+# its belly level with its drill tips) on 4 upward-facing deck pads, and a
+# hold of MINE_CONTAINERS Large Cargo Containers. Lift: 2 rows of 6 large
+# atmospheric thrusters along the keel sides, sized so a full hold with 4
+# full miners docked still lifts ~1.9 g at sea level (docs/MINING.md).
+#   keel x0..10, y0..4, z0..17: lift rows x0..2 / x8..10, centre box
+#   x3..7 (shell) holds the hold, reactor, gyros, batteries, PBs.
+#   deck y5; pads at (3|7, 6, 5|12), 10 m x 17.5 m apart, nothing else
+#   within 3 m of a pad above the deck.
+# ======================================================================
+MINE_CONTAINERS = 2
+MINE_PADS = [(3, 6, 5), (7, 6, 5), (3, 6, 12), (7, 6, 12)]
+MINER_MASS_T, MINER_CARGO_M3 = 40.2, 31.25      # SCAM Min3r 69R: dry mass, 2 small-grid large containers
+
+
+def mining_carrier():
+    s = Ship("FS Mining Carrier Atmo", "Large")
+    # lift: 2 rows of 6 large atmo along the keel sides
+    for x, side in ((0, "L"), (8, "R")):
+        for i, z in enumerate(range(0, 18, 3)):
+            s.add("l_atmo_big", (x, 0, z), fwd="Down", up="Forward", name=f"Lift Thruster {side}{i + 1}")
+    # centre box: hold, reactor, gyros, batteries, PBs
+    for i in range(MINE_CONTAINERS):
+        s.add("l_container", (4, 1, 1 + 4 * i), name=f"Cargo Hold {i + 1}")
+    s.add("l_reactor_big", (4, 1, 9), name="Large Reactor")
+    for i, (x, z) in enumerate([(x, z) for z in range(13, 17) for x in (4, 5, 6)]):
+        s.add("l_gyro", (x, 1, z), name=f"Gyroscope {i + 1}")                # gyros mount on their bottom: on the floor
+    for i, (x, z) in enumerate([(4, 13), (6, 13), (4, 15), (6, 15)]):
+        s.add("l_battery", (x, 2, z), name=f"Battery {i + 1}")
+    s.add("l_pb", (4, 3, 13), name="Programmable Block [Mine Core]", program="MineCore")   # PBs mount on their bottom: on batteries
+    s.add("l_pb", (6, 3, 13), name="Programmable Block [Mine UI]")
+    s.fill((3, 0, 0), (7, 4, 17), "l_armor", shell=True)
+    # deck and pads
+    s.fill((0, 5, 0), (10, 5, 17), "l_armor")
+    for i, p in enumerate(MINE_PADS):
+        s.add("l_connector", p, fwd="Up", up="Forward", name=f"Connector [Dock] Pad {i + 1}")
+    s.add("l_cockpit", (5, 6, 0), fwd="Forward", up="Up", name="Cockpit [FS:Mine:0] [FS:Map:1] [FS:Miners:2] [FS:Cargo:3]")
+    s.add("l_antenna", (10, 6, 16), name="Antenna", extra="<BroadcastRadius>10000</BroadcastRadius>")
+    # belly: ore detector and landing gear (clear of the lift exhaust columns)
+    s.add("l_ore", (5, -1, 8), fwd="Forward", up="Up", name="Ore Detector")
+    for i, (x, z) in enumerate([(4, 1), (6, 1), (4, 14), (6, 14)]):
+        s.add("l_gear", (x, -2, z), name=f"Landing Gear {i + 1}")
+    # main drive and brakes at the keel ends, held by a roof row over them
+    for x in (2, 6):
+        s.add("l_atmo_big", (x, 1, 18), fwd="Backward", up="Up", name=f"Main Thruster {'L' if x == 2 else 'R'}")
+        s.add("l_atmo_big", (x, 1, -5), fwd="Forward", up="Up", name=f"Brake Thruster {'L' if x == 2 else 'R'}")
+    s.fill((2, 4, 18), (8, 4, 20), "l_armor")
+    s.fill((2, 4, -3), (8, 4, -1), "l_armor")
+    # lateral thrusters on the deck edges; atmo thrusters only mount by their middle cell
+    for z in (3, 9, 15):
+        s.add("l_atmo", (11, 5, z), fwd="Right", up="Up", name=f"Thruster Left {z}")
+        s.add("l_atmo", (-3, 5, z), fwd="Left", up="Up", name=f"Thruster Right {z}")
+        for x in (10, 11, 12, -2, -1, 0):
+            s.add("l_armor", (x, 6, z))
+    s.check_exhaust(depth=4)
+    for p in MINE_PADS:     # pad clearance: nothing above the deck within 3 m (1 cell) of a pad but the pad
+        for c, who in s.cells.items():
+            if c[1] >= 6 and abs(c[0] - p[0]) <= 1 and abs(c[2] - p[2]) <= 1 and c != p:
+                raise ValueError(f"{s.name}: {who} at {c} blocks the miner pad at {p}")
+    return s
+
+
 def report(s, cargo=0, note=""):
     st = s.stats(cargo)
     cell = st["cell"]
@@ -548,7 +619,7 @@ def combined(carrier_ship, buster_ship, spotter_ship, code):
 
 
 def main():
-    code = {k: (DIST / f"{k}.cs").read_text(encoding="utf-8").replace("\r\n", "\n") for k in ("Drone", "HubCore", "HubUI")}
+    code = {k: (DIST / f"{k}.cs").read_text(encoding="utf-8").replace("\r\n", "\n") for k in ("Drone", "HubCore", "HubUI", "MineCore")}
     OUT.mkdir(exist_ok=True)
     summary = []
     b = buster()
@@ -558,7 +629,15 @@ def main():
     c = carrier()
     summary += report(c)[0]
     summary += report(c, cargo=8 * b.stats()["mass"], note=" (+8 Busters docked)")[0][1:2]
-    for s in (b, sp, c):
+    m = mining_carrier()
+    summary += report(m)[0]
+    miners = 4 * MINER_MASS_T * 1000
+    full = miners + (4 * MINER_CARGO_M3 + MINE_CONTAINERS * LARGE_CONTAINER_M3) * ORE_T_PER_M3 * 1000
+    summary += report(m, cargo=miners, note=" (+4 miners docked)")[0][1:2]
+    summary += [f"  hold: {MINE_CONTAINERS} x {LARGE_CONTAINER_M3:g} m3; full hold and 4 full miners: "
+                f"{(m.stats()['mass'] + full) / 1000:.0f} t, lift TWR {m.stats(full)['twr']:.2f}"]
+    print(summary[-1])
+    for s in (b, sp, c, m):
         d = OUT / s.name
         d.mkdir(exist_ok=True)
         (d / "bp.sbc").write_text(s.xml(code), encoding="utf-8")

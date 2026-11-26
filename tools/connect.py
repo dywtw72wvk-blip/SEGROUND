@@ -4,7 +4,12 @@
 
 Two blocks are joined when mount-point rectangles on a shared face overlap (and their
 exclusion masks allow it). Every grid should be one connected piece; anything else falls off
-the first time the game re-checks the grid (a block destroyed or removed)."""
+the first time the game re-checks the grid (a block destroyed or removed).
+
+Limitation: mount points are matched in face coordinates whose left/right and up/down sense was worked out from
+the game's thrusters, connectors, antennas and solar panels. Blocks with full-face or symmetric mount points (the
+ones tools/shipgen.py uses) check exactly; slopes and corners with off-centre mount points can be reported loose
+when they aren't (seen on hand-built workshop ships)."""
 import sys, os, glob
 import xml.etree.ElementTree as ET
 from collections import defaultdict, deque
