@@ -4,6 +4,7 @@ A multi-drone fleet for Space Engineers programmable blocks. One hub script runs
 
 - `dist/` holds the paste-ready scripts: `HubCore.cs`, `HubUI.cs` and `Drone.cs`.
 - `docs/SETUP.md` covers in-game setup, commands and the phase 1 acceptance test.
+- `docs/SHIPS.md` covers the two ready-made atmospheric ships, **FS Carrier Atmo** and **FS Buster Atmo**. `install.bat` puts them in your F10 blueprint list after checking them against your game files.
 - `docs/ARCHITECTURE.md` is the design and roadmap. Phase 2 (done) adds Buster defense drones: alert levels, an automatic screen, charge rotation, patrols and a tactical map.
 - `src/` holds the source fragments. `tools/build.py` assembles them (`--check` compile-checks against `tools/stubs`).
 

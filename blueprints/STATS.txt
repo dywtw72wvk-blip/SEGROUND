@@ -1,0 +1,10 @@
+FS Buster Atmo: 255 blocks, 17.7 t, 5.5 x 7.5 x 7.0 m (W x H x L)
+  lift TWR at 1 g, sea level: 2.99
+  accel m/s^2: Up 29.4, Forward 9.8, Backward 9.8, Left 4.9, Right 4.9, Down 0.0
+  centre of mass (cells): x 3.98  y 6.59  z 7.24
+  lift TWR at 1 g, sea level: 2.94
+FS Carrier Atmo: 586 blocks, 606.9 t, 27.5 x 30.0 x 70.0 m (W x H x L)
+  lift TWR at 1 g, sea level: 2.74
+  accel m/s^2: Up 26.9, Forward 9.6, Backward 9.6, Left 2.9, Right 2.9, Down 0.0
+  centre of mass (cells): x 4.02  y 2.71  z 11.55
+  lift TWR at 1 g, sea level: 2.22

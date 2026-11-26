@@ -11,6 +11,10 @@
 //   name contains [Fleet Factory]-> Factory
 //   or the block already runs a Fleet System script -> updated to the latest
 //
+// Also installs the ship blueprints in ..\blueprints into Blueprints\local (your
+// F10 list) after checking every block against the game's own CubeBlocks
+// definitions (block type/ID exists, right grid size, no overlapping blocks).
+//
 // Safety: shows the plan and asks first; refuses while Space Engineers is
 // running; backs up every file it changes (*.fleetbak-<time>); retires the
 // game's binary caches (.sbsB5 / .sbcB5 / .sbcPB) so the edited XML is used.
@@ -75,6 +79,9 @@ public static class FleetPatch
         Console.WriteLine("Fleet System version: " + version);
 
         if (!Directory.Exists(se)) { Console.WriteLine("Space Engineers data folder not found: " + se); Console.WriteLine("Start the game once, save a world, then run the installer again."); return 0; }
+
+        try { InstallShips(Path.GetFullPath(Path.Combine(dist, Path.Combine("..", "blueprints"))), se, dryRun); }
+        catch (Exception e) { Console.WriteLine("Ship blueprints: ERROR " + e.Message); }
 
         // 2. find candidate files
         var files = new List<KeyValuePair<string, string>>();
@@ -170,6 +177,155 @@ public static class FleetPatch
         Console.WriteLine("Done: " + done + " programmable block(s) now run Fleet System " + version + ".");
         Console.WriteLine("Load the world in game and the scripts start automatically.");
         return 0;
+    }
+
+    // ------------------------------------------------------------------ ship blueprints
+    class Def { public string CubeSize; public int X, Y, Z; }
+
+    static void InstallShips(string src, string se, bool dryRun)
+    {
+        if (!Directory.Exists(src)) return;
+        Console.WriteLine();
+        Console.WriteLine("--- Ship blueprints (F10 menu) ---");
+        string where;
+        var defs = LoadDefinitions(out where);
+        if (defs == null) Console.WriteLine("WARNING: Space Engineers game files not found, so blueprints are installed WITHOUT verification.\n  (Set FLEET_SE_GAME to your SpaceEngineers install folder to enable the check.)");
+        else Console.WriteLine("Verifying against " + defs.Count + " block definitions in " + where);
+        foreach (var dir in Directory.GetDirectories(src))
+        {
+            string bp = Path.Combine(dir, "bp.sbc");
+            if (!File.Exists(bp)) continue;
+            string name = Path.GetFileName(dir);
+            var problems = defs != null ? Validate(bp, defs) : new List<string>();
+            if (problems.Count > 0)
+            {
+                Console.WriteLine("  NOT installed: " + name + " (" + problems.Count + " problem(s), please report these):");
+                for (int i = 0; i < Math.Min(12, problems.Count); i++) Console.WriteLine("     " + problems[i]);
+                continue;
+            }
+            if (dryRun) { Console.WriteLine("  would install: " + name + (defs != null ? "  (verified)" : "")); continue; }
+            string dest = Path.Combine(se, Path.Combine("Blueprints", Path.Combine("local", name)));
+            Directory.CreateDirectory(dest);
+            File.Copy(bp, Path.Combine(dest, "bp.sbc"), true);
+            foreach (var ext in new[] { "B5", "PB" }) { string c = Path.Combine(dest, "bp.sbc" + ext); if (File.Exists(c)) File.Delete(c); }
+            Console.WriteLine("  installed: " + name + (defs != null ? "  (verified)" : ""));
+        }
+    }
+
+    static string FindGame()
+    {
+        string env = Environment.GetEnvironmentVariable("FLEET_SE_GAME");
+        if (!string.IsNullOrEmpty(env) && Directory.Exists(Path.Combine(env, Path.Combine("Content", "Data")))) return env;
+        var roots = new List<string>();
+        foreach (var k in new[] { @"HKEY_CURRENT_USER\Software\Valve\Steam|SteamPath", @"HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Valve\Steam|InstallPath", @"HKEY_LOCAL_MACHINE\SOFTWARE\Valve\Steam|InstallPath" })
+        {
+            try
+            {
+                var parts = k.Split('|');
+                var v = Microsoft.Win32.Registry.GetValue(parts[0], parts[1], null) as string;
+                if (!string.IsNullOrEmpty(v)) roots.Add(v.Replace('/', '\\'));
+            }
+            catch { }
+        }
+        roots.Add(@"C:\Program Files (x86)\Steam");
+        var libs = new List<string>();
+        foreach (var r in roots)
+        {
+            libs.Add(r);
+            string vdf = Path.Combine(r, Path.Combine("steamapps", "libraryfolders.vdf"));
+            if (!File.Exists(vdf)) continue;
+            foreach (Match m in Regex.Matches(File.ReadAllText(vdf), "\"path\"\\s+\"([^\"]+)\"")) libs.Add(m.Groups[1].Value.Replace(@"\\", @"\"));
+        }
+        foreach (var l in libs)
+        {
+            string g = Path.Combine(l, Path.Combine("steamapps", Path.Combine("common", "SpaceEngineers")));
+            if (Directory.Exists(Path.Combine(g, Path.Combine("Content", "Data")))) return g;
+        }
+        return null;
+    }
+
+    // TypeId/SubtypeId -> grid size + footprint, from the game's CubeBlocks*.sbc files
+    static Dictionary<string, Def> LoadDefinitions(out string where)
+    {
+        where = FindGame();
+        if (where == null) return null;
+        var defs = new Dictionary<string, Def>();
+        foreach (var f in Directory.GetFiles(Path.Combine(where, Path.Combine("Content", "Data")), "*.sbc", SearchOption.AllDirectories))
+        {
+            string text;
+            try { text = File.ReadAllText(f); } catch { continue; }
+            if (text.IndexOf("<CubeBlocks", StringComparison.Ordinal) < 0) continue;
+            var doc = new XmlDocument();
+            try { doc.LoadXml(text); } catch { continue; }
+            foreach (XmlNode d in doc.SelectNodes("//CubeBlocks/Definition"))
+            {
+                var id = d.SelectSingleNode("Id");
+                if (id == null) continue;
+                string type = Text(id.SelectSingleNode("TypeId")) ?? Attr(id, "Type");
+                string sub = Text(id.SelectSingleNode("SubtypeId")) ?? Attr(id, "Subtype") ?? "";
+                var size = d.SelectSingleNode("Size");
+                if (type == null || size == null) continue;
+                type = type.Replace("MyObjectBuilder_", "");
+                defs[type + "/" + sub] = new Def { CubeSize = Text(d.SelectSingleNode("CubeSize")) ?? "", X = Int(Attr(size, "x")), Y = Int(Attr(size, "y")), Z = Int(Attr(size, "z")) };
+            }
+        }
+        return defs.Count > 0 ? defs : null;
+    }
+
+    static string Text(XmlNode n) { return n == null ? null : n.InnerText.Trim(); }
+    static string Attr(XmlNode n, string a) { var x = n.Attributes != null ? n.Attributes[a] : null; return x == null ? null : x.Value; }
+    static int Int(string s) { int v; return int.TryParse(s, out v) ? v : 1; }
+
+    static int[] Dir(string d)
+    {
+        switch (d)
+        {
+            case "Forward": return new[] { 0, 0, -1 };
+            case "Backward": return new[] { 0, 0, 1 };
+            case "Left": return new[] { -1, 0, 0 };
+            case "Right": return new[] { 1, 0, 0 };
+            case "Up": return new[] { 0, 1, 0 };
+            default: return new[] { 0, -1, 0 };
+        }
+    }
+
+    static List<string> Validate(string bp, Dictionary<string, Def> defs)
+    {
+        var problems = new List<string>();
+        var doc = new XmlDocument();
+        doc.Load(bp);
+        var ns = new XmlNamespaceManager(doc.NameTable);
+        ns.AddNamespace("xsi", XsiNs);
+        foreach (XmlNode grid in doc.SelectNodes("//CubeGrid"))
+        {
+            string gsize = Text(grid.SelectSingleNode("GridSizeEnum")) ?? "";
+            var cells = new Dictionary<string, string>();
+            foreach (XmlNode b in grid.SelectNodes("CubeBlocks/*"))
+            {
+                var ta = b.Attributes["type", XsiNs];
+                string type = ta != null ? ta.Value.Replace("MyObjectBuilder_", "") : "CubeBlock";
+                string sub = Text(b.SelectSingleNode("SubtypeName")) ?? "";
+                string label = (Text(b.SelectSingleNode("CustomName")) ?? sub) + " [" + type + "/" + sub + "]";
+                Def def;
+                if (!defs.TryGetValue(type + "/" + sub, out def)) { problems.Add("unknown block: " + type + "/" + (sub.Length > 0 ? sub : "(empty)")); continue; }
+                if (!string.Equals(def.CubeSize, gsize, StringComparison.OrdinalIgnoreCase)) { problems.Add("wrong grid size: " + label + " is " + def.CubeSize + ", ship is " + gsize); continue; }
+                var mn = b.SelectSingleNode("Min"); var or = b.SelectSingleNode("BlockOrientation");
+                int[] f = Dir(Attr(or, "Forward") ?? "Forward"), u = Dir(Attr(or, "Up") ?? "Up");
+                int[] r = { f[1] * u[2] - f[2] * u[1], f[2] * u[0] - f[0] * u[2], f[0] * u[1] - f[1] * u[0] };
+                int[] e = new int[3];
+                for (int i = 0; i < 3; i++) e[i] = Math.Abs(r[i]) * def.X + Math.Abs(u[i]) * def.Y + Math.Abs(f[i]) * def.Z;
+                int x0 = Int(Attr(mn, "x")), y0 = Int(Attr(mn, "y")), z0 = Int(Attr(mn, "z"));
+                for (int x = 0; x < e[0]; x++) for (int y = 0; y < e[1]; y++) for (int z = 0; z < e[2]; z++)
+                {
+                    string c = (x0 + x) + "," + (y0 + y) + "," + (z0 + z);
+                    string other;
+                    if (cells.TryGetValue(c, out other)) { problems.Add("overlap at " + c + ": " + label + " and " + other); goto nextBlock; }
+                    cells[c] = label;
+                }
+                nextBlock:;
+            }
+        }
+        return problems;
     }
 
     // ------------------------------------------------------------------ core

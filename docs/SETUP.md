@@ -316,7 +316,9 @@ New script: **`Factory.cs`**. Put it on a programmable block named `[Fleet Facto
 
 ## 11. Factory (base fabrication line)
 
-**Build the bay.** Name these blocks with `[Factory]`; all must be on the hub:
+> **Merge blocks only join grids of the same size.** A large-grid base can't print small-grid Busters directly. Put the `[Factory]` merge block on a small-grid plate attached to the base, for example on a rotor or hinge head. Rotor-attached parts count as the same construct, so the Factory script still finds the merge block.
+
+**Build the bay.** Name these blocks with `[Factory]`; all must be on the hub or its rotor-attached plate:
 - **1 projector:** load your Buster blueprint, for example `FS Buster Atmo`. Align it so the drone's merge block meets the factory merge block, and tick **Keep projection**.
 - **Welders** covering the whole projection.
 - **1 merge block:** holds the drone while it's welded.

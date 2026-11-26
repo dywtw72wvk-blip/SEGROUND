@@ -86,6 +86,10 @@ def main():
                 print("  " + out.replace("\n", "\n  "))
         else:
             print(status)
+    # ship blueprints embed the freshly built scripts
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "shipgen.py")], capture_output=True, text=True)
+    print("Ship blueprints  " + ("OK (see blueprints/STATS.txt)" if r.returncode == 0 else "FAILED\n  " + (r.stdout + r.stderr).strip()))
+    ok_all &= r.returncode == 0
     if do_check:
         with tempfile.TemporaryDirectory() as tmp:
             r = subprocess.run(["mcs", "-langversion:5", "-nologo", "-r:System.Xml.dll", f"-out:{tmp}/FleetPatch.exe",
