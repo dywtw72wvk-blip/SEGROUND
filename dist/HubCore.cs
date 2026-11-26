@@ -59,7 +59,7 @@ readonly StringBuilder sb = new StringBuilder();
 int netId, cfgMode;
 string key = "", dockTag = "", ctlTag = "", perfMode = "NORMAL", formC = "WEDGE", formB = "RING";
 double spacing, koCfg, rtbBatt, rtbInteg, lostAfter;
-bool autoRtb, autoProv, hasWp;
+bool autoRtb, autoProv, hasWp, bootLocked;
 // defense config
 bool defense;
 int screenG, screenY, screenR, engageAlert;
@@ -585,7 +585,7 @@ void UpdateAlert()
 // One action per LaunchInterval so departures from the docks are staggered.
 void Manage()
 {
-    if (!defense || jumpState != Proto.JUMP_NONE || T < nextManage) return;
+    if (!defense || !bootLocked || jumpState != Proto.JUMP_NONE || T < nextManage) return;
     mOut.Clear(); mReady.Clear(); mIdle.Clear();
     int total = 0;
     foreach (var d in sorted)
@@ -640,6 +640,12 @@ static Drone Best(List<Drone> l, bool highest)
 bool LaunchReady(Drone d)
 {
     if (d.Batt >= 0 && d.Batt < launchBatt) return false;
+    // Never launch what auto-RTB would recall straight away (e.g. empty turrets and no [Rearm]
+    // to fill them): that's a launch/recall loop. Hold it docked and say why, once.
+    string why = !autoRtb ? null : d.Integ < rtbInteg ? "hull " + Util.Pct(d.Integ)
+               : d.Ammo >= 0 && d.Ammo < rtbAmmo ? "ammo " + Util.Pct(d.Ammo) + (rearmBlocks.Count == 0 ? ": load its turrets (no " + rearmTag + " on hub)" : "") : null;
+    if (why != null) { if (!d.Held) { d.Held = true; Log(d.Call + " held docked, " + why); } return false; }
+    d.Held = false;
     bool waited = T - d.DockedSince > repairTimeout;   // never strand a drone that can't be fully fixed
     if (d.Integ < launchInteg && repairBlocks.Count > 0 && !waited) return false;
     if (d.Ammo >= 0 && d.Ammo < launchAmmo && rearmBlocks.Count > 0 && !waited) return false;
@@ -653,9 +659,14 @@ void SetJumpDrives(bool on) { foreach (var j in jumpDrives) if (!j.Closed && j.E
 // repair/rearm on demand + jump interlock (2 Hz from Tasking)
 void Logistics()
 {
-    // Right after a paste/load, lock any dock that has a drone sitting in range
-    // (pre-docked blueprints). Only during start-up, so undocking drones are never re-grabbed.
-    if (T < 30) foreach (var c in docks.List) if (!c.Closed && c.Status == MyShipConnectorStatus.Connectable) c.Connect();
+    // Right after a paste/load, lock any dock that has a drone sitting in range (pre-docked
+    // blueprints). One pass only, and Manage() waits for it, so a launching drone is never re-grabbed.
+    if (!bootLocked && T >= 2)
+    {
+        foreach (var c in docks.List) if (!c.Closed && c.Status == MyShipConnectorStatus.Connectable) c.Connect();
+        bootLocked = true;
+        nextManage = Math.Max(nextManage, T + 3);   // let drones report docked before any launch
+    }
 
     bool dmg = false, any = false, allDocked = true;
     foreach (var d in reg.Values)
@@ -1051,6 +1062,7 @@ class Drone
 
     public long Conn;            // reserved dock connector
     public bool Managed;         // under automatic defense control
+    public bool Held;            // kept docked: auto-RTB would recall it at once (logged once)
 
     public bool Docked { get { return (Flags & Proto.F_DOCKED) != 0; } }
     public bool Acked { get { return Seq == 0 || Ack == Seq; } }
@@ -1074,6 +1086,12 @@ class Docks
 
     public IMyShipConnector Reserve(Drone d)
     {
+        // already sitting on one of our docks: that's its dock, don't send it elsewhere
+        if (d.Docked && d.DockId != 0)
+        {
+            var at = Get(d.DockId);
+            if (at != null) { Claim(d, d.DockId); Res[d.DockId] = d.Addr; return at; }
+        }
         if (d.Conn != 0)
         {
             var e = Get(d.Conn);

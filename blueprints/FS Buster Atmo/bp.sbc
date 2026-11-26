@@ -28,6 +28,8 @@
               <Min x="3" y="3" z="6" />
               <BlockOrientation Forward="Down" Up="Forward" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Lift Thruster</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_LargeGatlingTurret">
@@ -36,7 +38,10 @@
               <Min x="2" y="10" z="6" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Gatling Turret Top</CustomName>
+              <ComponentContainer><Components><ComponentData><TypeId>MyInventoryBase</TypeId><Component xsi:type="MyObjectBuilder_Inventory"><CanPutItems>true</CanPutItems><Items><MyObjectBuilder_InventoryItem><Amount>5</Amount><PhysicalContent xsi:type="MyObjectBuilder_AmmoMagazine"><SubtypeName>NATO_25x184mm</SubtypeName><ProjectilesCount>0</ProjectilesCount></PhysicalContent><ItemId>0</ItemId></MyObjectBuilder_InventoryItem></Items><nextItemId>1</nextItemId><Volume>0.08</Volume><Mass>9223372036854.775807</Mass><MaxItemCount>2147483647</MaxItemCount><Size xsi:nil="true" /><InventoryFlags>CanReceive</InventoryFlags><RemoveEntityOnEmpty>false</RemoveEntityOnEmpty></Component></ComponentData></Components></ComponentContainer>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_LargeGatlingTurret">
               <SubtypeName>SmallGatlingTurret</SubtypeName>
@@ -44,7 +49,10 @@
               <Min x="2" y="0" z="9" />
               <BlockOrientation Forward="Forward" Up="Down" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Gatling Turret Belly</CustomName>
+              <ComponentContainer><Components><ComponentData><TypeId>MyInventoryBase</TypeId><Component xsi:type="MyObjectBuilder_Inventory"><CanPutItems>true</CanPutItems><Items><MyObjectBuilder_InventoryItem><Amount>5</Amount><PhysicalContent xsi:type="MyObjectBuilder_AmmoMagazine"><SubtypeName>NATO_25x184mm</SubtypeName><ProjectilesCount>0</ProjectilesCount></PhysicalContent><ItemId>0</ItemId></MyObjectBuilder_InventoryItem></Items><nextItemId>1</nextItemId><Volume>0.08</Volume><Mass>9223372036854.775807</Mass><MaxItemCount>2147483647</MaxItemCount><Size xsi:nil="true" /><InventoryFlags>CanReceive</InventoryFlags><RemoveEntityOnEmpty>false</RemoveEntityOnEmpty></Component></ComponentData></Components></ComponentContainer>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_MergeBlock">
               <SubtypeName>SmallShipMergeBlock</SubtypeName>
@@ -52,6 +60,8 @@
               <Min x="4" y="2" z="3" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Merge Block (factory mount)</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_ShipConnector">
@@ -60,6 +70,8 @@
               <Min x="3" y="6" z="0" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Connector</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Thrust">
@@ -68,6 +80,8 @@
               <Min x="1" y="7" z="11" />
               <BlockOrientation Forward="Backward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Thruster Forward L</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Thrust">
@@ -76,6 +90,8 @@
               <Min x="7" y="7" z="11" />
               <BlockOrientation Forward="Backward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Thruster Forward R</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Thrust">
@@ -84,6 +100,8 @@
               <Min x="1" y="7" z="2" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Thruster Brake L</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Thrust">
@@ -92,6 +110,8 @@
               <Min x="7" y="7" z="2" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Thruster Brake R</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Thrust">
@@ -100,6 +120,8 @@
               <Min x="7" y="6" z="7" />
               <BlockOrientation Forward="Right" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Thruster Left</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Thrust">
@@ -108,6 +130,8 @@
               <Min x="-1" y="6" z="7" />
               <BlockOrientation Forward="Left" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Thruster Right</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_RemoteControl">
@@ -116,6 +140,8 @@
               <Min x="4" y="9" z="3" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Remote Control</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_MyProgrammableBlock">
@@ -124,6 +150,8 @@
               <Min x="2" y="9" z="3" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Programmable Block [Fleet Drone]</CustomName>
               <Program>// FLEET SYSTEM 0.3.0-phase3 — Drone
 // Generated by tools/build.py from src/. Paste this whole file into the programmable block.
@@ -554,6 +582,8 @@ void Step()
             if (Connected()) Enter(Proto.S_DOCKED);
             break;
         case Proto.S_HOLD:
+            // never fly against a locked connector: if something locked us, we're docked
+            if (Connected()) { Enter(Proto.S_DOCKED); break; }
             FlyHoldAt(holdPos);
             break;
         case Proto.S_ESCORT:
@@ -574,7 +604,9 @@ void Step()
             FlyFinal();
             break;
         case Proto.S_DOCKED:
-            if (!Connected()) { DockedPower(false); CaptureHold(); Enter(Proto.S_HOLD); }
+            // a jolt can drop the lock without us leaving the port: re-lock instead of flying off
+            if (conn != null &amp;&amp; conn.Status == MyShipConnectorStatus.Connectable) conn.Connect();
+            else if (!Connected()) { DockedPower(false); CaptureHold(); Enter(Proto.S_HOLD); }
             break;
         case Proto.S_UNDOCKING:
             FlyUndock();
@@ -747,7 +779,15 @@ Vector3D Avoid(Vector3D tgt, MatrixD m)
     if (L2 &lt; 1) return tgt;
     double s = Util.Clamp(Vector3D.Dot(c - p, seg) / L2, 0, 1);
     if (s &lt;= 0.02 || s &gt;= 0.98) return tgt;
-    if ((p - c).Length() &lt; R * 0.95) return tgt;       // already inside: go direct
+    double d = (p - c).Length();
+    if (d &lt; R * 0.95)
+    {
+        // Inside (e.g. just off a dock): if the target lies further out, leave radially first
+        // instead of cutting back across the hull and the docked drones. Docking (target
+        // deeper in) and final settling (target close) still go direct.
+        if ((tgt - c).Length() &gt; d + 5 &amp;&amp; (tgt - p).Length() &gt; clearance) return c + Util.Norm(p - c) * R;
+        return tgt;
+    }
     Vector3D q = p + seg * s, off = q - c;
     if (off.Length() &gt;= R) return tgt;
     if (off.LengthSquared() &lt; 1e-6) off = Util.Perp(seg);
@@ -1468,6 +1508,8 @@ class Telemetry
               <Min x="4" y="5" z="3" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Gyroscope 1</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_Gyro">
@@ -1476,6 +1518,8 @@ class Telemetry
               <Min x="4" y="5" z="11" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Gyroscope 2</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_BatteryBlock">
@@ -1484,6 +1528,8 @@ class Telemetry
               <Min x="3" y="8" z="4" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Battery 1</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_BatteryBlock">
@@ -1492,6 +1538,8 @@ class Telemetry
               <Min x="3" y="8" z="10" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Battery 2</CustomName>
             </MyObjectBuilder_CubeBlock>
             <MyObjectBuilder_CubeBlock xsi:type="MyObjectBuilder_RadioAntenna">
@@ -1500,6 +1548,8 @@ class Telemetry
               <Min x="2" y="10" z="12" />
               <BlockOrientation Forward="Forward" Up="Up" />
               <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />
+              <Owner>144115188075855897</Owner>
+              <ShareMode>Faction</ShareMode>
               <CustomName>Antenna</CustomName>
               <BroadcastRadius>3000</BroadcastRadius>
             </MyObjectBuilder_CubeBlock>

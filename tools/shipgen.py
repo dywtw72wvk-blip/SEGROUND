@@ -14,14 +14,39 @@ local size (x, y, z) maps through its orientation: local right = Forward x Up,
 local up = Up, local +z = Backward. Thrusters push the ship toward their own
 Backward (+Z) side, i.e. their Forward points along the exhaust.
 """
+import collections
 import hashlib
 import math
+import os
 import pathlib
+import re
 from xml.sax.saxutils import escape
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "blueprints"
 DIST = ROOT / "dist"
+
+
+def _owner_id():
+    """Player identity to own the terminal blocks. Without an <Owner> the game pastes them
+    owned by nobody. FS_OWNER_ID wins; otherwise the most common owner in the player's own
+    saved blueprints (Blueprints/local, skipping FS ones); otherwise 0 (no owner written)."""
+    env = os.environ.get("FS_OWNER_ID", "").strip()
+    if env.isdigit():
+        return int(env)
+    local = pathlib.Path(os.environ.get("APPDATA", "")) / "SpaceEngineers" / "Blueprints" / "local"
+    seen = collections.Counter()
+    for bp in local.glob("*/bp.sbc") if local.is_dir() else []:
+        if bp.parent.name.startswith("FS "):
+            continue
+        try:
+            seen.update(int(m) for m in re.findall(r"<Owner>(\d+)</Owner>", bp.read_text(encoding="utf-8", errors="replace")) if m != "0")
+        except OSError:
+            pass
+    return seen.most_common(1)[0][0] if seen else 0
+
+
+OWNER_ID = _owner_id()
 G = 9.81
 ATMO_SEA_LEVEL = 0.9          # wiki: ~90 % atmospheric thrust efficiency at sea level
 
@@ -150,6 +175,9 @@ class Ship:
                  f'              <Min x="{mn[0]}" y="{mn[1]}" z="{mn[2]}" />',
                  f'              <BlockOrientation Forward="{b["fwd"]}" Up="{b["up"]}" />',
                  '              <ColorMaskHSV x="0.58" y="-0.55" z="-0.1" />']
+            if OWNER_ID and t != "CubeBlock":      # terminal blocks only, like a game-saved blueprint
+                s.append(f"              <Owner>{OWNER_ID}</Owner>")
+                s.append("              <ShareMode>Faction</ShareMode>")
             if b["name"]:
                 s.append(f"              <CustomName>{escape(b['name'])}</CustomName>")
             if b["extra"]:
@@ -221,11 +249,28 @@ def blueprint_xml(name, grids):
 #   turrets (top + belly), nose connector for docking, merge fin for
 #   factory printing, 2 batteries, 2 gyros.
 # ======================================================================
+# Pre-loaded turret ammo. SmallGatlingTurret inventory is 0.08 m3 and a
+# NATO_25x184mm magazine is 16 L / 35 kg, so 5 fill it. Without ammo the hub
+# holds a Buster docked (auto-RTB would recall it at 0% ammo). Same
+# ComponentContainer layout the game writes for a turret in a save.
+AMMO_MAGS = 5
+AMMO_MASS = 2 * AMMO_MAGS * 35     # kg, both turrets
+TURRET_AMMO = (
+    "<ComponentContainer><Components><ComponentData><TypeId>MyInventoryBase</TypeId>"
+    "<Component xsi:type=\"MyObjectBuilder_Inventory\"><CanPutItems>true</CanPutItems><Items>"
+    "<MyObjectBuilder_InventoryItem><Amount>" + str(AMMO_MAGS) + "</Amount>"
+    "<PhysicalContent xsi:type=\"MyObjectBuilder_AmmoMagazine\"><SubtypeName>NATO_25x184mm</SubtypeName>"
+    "<ProjectilesCount>0</ProjectilesCount></PhysicalContent><ItemId>0</ItemId></MyObjectBuilder_InventoryItem>"
+    "</Items><nextItemId>1</nextItemId><Volume>0.08</Volume><Mass>9223372036854.775807</Mass>"
+    "<MaxItemCount>2147483647</MaxItemCount><Size xsi:nil=\"true\" /><InventoryFlags>CanReceive</InventoryFlags>"
+    "<RemoveEntityOnEmpty>false</RemoveEntityOnEmpty></Component></ComponentData></Components></ComponentContainer>")
+
+
 def buster():
     s = Ship("FS Buster Atmo", "Small")
     s.add("s_atmo_big", (3, 3, 6), fwd="Down", up="Forward", name="Lift Thruster")
-    s.add("s_gatling", (2, 10, 6), fwd="Forward", up="Up", name="Gatling Turret Top")
-    s.add("s_gatling", (2, 0, 9), fwd="Forward", up="Down", name="Gatling Turret Belly")
+    s.add("s_gatling", (2, 10, 6), fwd="Forward", up="Up", name="Gatling Turret Top", extra=TURRET_AMMO)
+    s.add("s_gatling", (2, 0, 9), fwd="Forward", up="Down", name="Gatling Turret Belly", extra=TURRET_AMMO)
     s.add("s_merge", (4, 2, 3), name="Merge Block (factory mount)")
     s.add("s_connector", (3, 6, 0), fwd="Forward", up="Up", name="Connector")
     # horizontal thrusters (Forward = exhaust direction; pushes the opposite way)
@@ -394,10 +439,10 @@ def main():
     summary = []
     b = buster()
     summary += report(b)[0]
-    summary += report(b, cargo=300, note=" (+ammo)")[0][1:2]
+    summary += report(b, cargo=AMMO_MASS, note=f" (+{AMMO_MASS} kg pre-loaded ammo)")[0][1:2]
     c = carrier()
     summary += report(c)[0]
-    summary += report(c, cargo=8 * b.stats()["mass"], note=" (+8 Busters docked)")[0][1:2]
+    summary += report(c, cargo=8 * (b.stats()["mass"] + AMMO_MASS), note=" (+8 Busters docked)")[0][1:2]
     for s in (b, c):
         d = OUT / s.name
         d.mkdir(exist_ok=True)
@@ -408,6 +453,7 @@ def main():
     (d / "bp.sbc").write_text(cxml, encoding="utf-8")
     summary.append(f"{cname}: carrier + {len(cxml.split('<CubeGrid>')) - 2} docked Busters (connector faces {DOCK_GAP} m apart, clearance checked)")
     print(summary[-1])
+    print(f"block owner: {OWNER_ID}" if OWNER_ID else "block owner: none found (set FS_OWNER_ID): ships will paste unowned")
     (OUT / "STATS.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")
     print(f"wrote {OUT}/<name>/bp.sbc")
 

@@ -31,6 +31,7 @@ class Drone
 
     public long Conn;            // reserved dock connector
     public bool Managed;         // under automatic defense control
+    public bool Held;            // kept docked: auto-RTB would recall it at once (logged once)
 
     public bool Docked { get { return (Flags & Proto.F_DOCKED) != 0; } }
     public bool Acked { get { return Seq == 0 || Ack == Seq; } }

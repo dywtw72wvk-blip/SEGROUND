@@ -16,6 +16,12 @@ class Docks
 
     public IMyShipConnector Reserve(Drone d)
     {
+        // already sitting on one of our docks: that's its dock, don't send it elsewhere
+        if (d.Docked && d.DockId != 0)
+        {
+            var at = Get(d.DockId);
+            if (at != null) { Claim(d, d.DockId); Res[d.DockId] = d.Addr; return at; }
+        }
         if (d.Conn != 0)
         {
             var e = Get(d.Conn);

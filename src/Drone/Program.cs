@@ -424,6 +424,8 @@ void Step()
             if (Connected()) Enter(Proto.S_DOCKED);
             break;
         case Proto.S_HOLD:
+            // never fly against a locked connector: if something locked us, we're docked
+            if (Connected()) { Enter(Proto.S_DOCKED); break; }
             FlyHoldAt(holdPos);
             break;
         case Proto.S_ESCORT:
@@ -444,7 +446,9 @@ void Step()
             FlyFinal();
             break;
         case Proto.S_DOCKED:
-            if (!Connected()) { DockedPower(false); CaptureHold(); Enter(Proto.S_HOLD); }
+            // a jolt can drop the lock without us leaving the port: re-lock instead of flying off
+            if (conn != null && conn.Status == MyShipConnectorStatus.Connectable) conn.Connect();
+            else if (!Connected()) { DockedPower(false); CaptureHold(); Enter(Proto.S_HOLD); }
             break;
         case Proto.S_UNDOCKING:
             FlyUndock();
@@ -617,7 +621,15 @@ Vector3D Avoid(Vector3D tgt, MatrixD m)
     if (L2 < 1) return tgt;
     double s = Util.Clamp(Vector3D.Dot(c - p, seg) / L2, 0, 1);
     if (s <= 0.02 || s >= 0.98) return tgt;
-    if ((p - c).Length() < R * 0.95) return tgt;       // already inside: go direct
+    double d = (p - c).Length();
+    if (d < R * 0.95)
+    {
+        // Inside (e.g. just off a dock): if the target lies further out, leave radially first
+        // instead of cutting back across the hull and the docked drones. Docking (target
+        // deeper in) and final settling (target close) still go direct.
+        if ((tgt - c).Length() > d + 5 && (tgt - p).Length() > clearance) return c + Util.Norm(p - c) * R;
+        return tgt;
+    }
     Vector3D q = p + seg * s, off = q - c;
     if (off.Length() >= R) return tgt;
     if (off.LengthSquared() < 1e-6) off = Util.Perp(seg);
