@@ -1,16 +1,17 @@
-# Fleet ships: FS Carrier Atmo, FS Buster Atmo, and the full set
+# Fleet ships: FS Carrier Atmo, FS Buster Atmo, FS Spotter Atmo, and the full set
 
-Three ready-to-load blueprints for planetary (atmospheric) flight. The Fleet System scripts are **already inside** every programmable block, and every setting has a working default, so nothing needs configuring.
+Four ready-to-load blueprints for planetary (atmospheric) flight. The Fleet System scripts are **already inside** every programmable block, and every setting has a working default, so nothing needs configuring.
 
 | Blueprint | What you get |
 |-----------|--------------|
-| **FS Carrier Atmo + 8 Busters** | **The whole fleet in one paste.** The carrier with a Buster docked at all 8 flank connectors. |
+| **FS Carrier Atmo + 8 Busters + Spotter** | **The whole fleet in one paste.** The carrier with a Buster docked at all 8 flank connectors and the spotter on the bow connector. |
 | FS Carrier Atmo | The carrier on its own |
 | FS Buster Atmo | One Buster, for adding more, or for loading into a `[Factory]` projector |
+| FS Spotter Atmo | One spotter (light recon plane) on its own |
 
-## One paste, ready to fly (FS Carrier Atmo + 8 Busters)
+## One paste, ready to fly (FS Carrier Atmo + 8 Busters + Spotter)
 
-1. Press F10, choose **FS Carrier Atmo + 8 Busters** and paste it.
+1. Press F10, choose **FS Carrier Atmo + 8 Busters + Spotter** and paste it.
 2. Load uranium into the carrier's 4 reactors. Inventory can't travel in a blueprint.
 
 Then, with no input from you:
@@ -61,7 +62,7 @@ Anything that fails the check isn't installed, and the installer lists the probl
 | | |
 |---|---|
 | Size | 27.5 × 30 × 70 m (W × H × L; the height includes the antenna mast), 586 blocks |
-| Mass | 607 t empty, about 748 t with 8 Busters docked |
+| Mass | 617 t empty, about 760 t with 8 Busters and the spotter docked |
 | Lift | 2 large and 8 small atmospheric thrusters. **Thrust-to-weight 2.74** empty, **2.22** fully loaded. |
 | Drive | 1 large atmospheric thruster forward and 1 back (9.6 m/s²), plus 3 small atmospheric thrusters per side (2.9 m/s²) |
 | Power | 4 small reactors (60 MW) and 4 batteries. **Load the reactors with uranium.** Hovering draws about 15 MW, and charging drones adds more. |
@@ -96,7 +97,9 @@ Report anything odd. Ship designs live in `tools/shipgen.py`; edit the layouts t
 
 ## FS Spotter Atmo
 
-The Buster airframe without warheads, AI blocks or merge block, with a small Gatling turret on top (5 magazines loaded) and the two nose cameras. The turret is the spotter's sensor: in WeaponCore worlds it gives the spotter's grid a WeaponCore AI whose threat list the script reads; in vanilla worlds the script reads the turret's lock. Its PB runs the Drone script with `Role=Spotter` in Custom Data, so `search` sends it ahead and the defense manager leaves it alone. 16.9 t, lift TWR 3.13. Paste it separately; it can dock at any free `[Dock]` connector.
+A light recon plane after the 'Butterfly' recon drone, vanilla blocks only: no armor, no weapons. A 1.5 m fuselage of functional blocks around one battery, solar-panel wings (11.5 m span), one large flat atmospheric lift thruster, small flat thrusters for the horizontal axes, and a conveyor boom with the antenna as its tail. 27 blocks, 6.5 t, lift TWR 3.2. Every block is held by its mount points (`tools/connect.py` checks this, since there's no armor to hold things together).
+
+Sensors: 6 down-looking cameras (3 under the nose scan rows ahead, 3 under the boom scan behind) and one forward camera. Its PB is named `Programmable Block [Fleet Drone] [Spotter]`. The Drone script defaults to `Role=Spotter` (with `ReconSpeed=35`, `LidarRate=12`, `LidarStep=40`) on any PB or grid with "Spotter" in its name, because the game drops Custom Data from pasted blueprints. So `search` sends it ahead and the defense manager leaves it alone. It docks nose-in at the carrier's bow connector (`Connector [Dock] Bow`) and comes docked in the fleet blueprint.
 
 ## Carrier designation
 

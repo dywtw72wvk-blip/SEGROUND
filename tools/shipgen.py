@@ -71,6 +71,12 @@ B = {
     "s_ai_off":    ("OffensiveCombatBlock", "SmallOffensiveCombat", "Small", (1, 1, 1), 156.0, 0, False),
     "s_ai_fly":    ("FlightMovementBlock", "SmallFlightMovement", "Small", (1, 1, 1), 156.0, 0, False),
     "s_gatling":   ("LargeGatlingTurret", "SmallGatlingTurret", "Small", (5, 5, 5), 692.0, 0, False),
+    # spotter airframe (all vanilla, no DLC): flat atmospheric thrusters, solar-panel wings
+    "s_flat":      ("Thrust", "SmallBlockSmallFlatAtmosphericThrust", "Small", (1, 1, 1), 303, 32000, True),
+    "s_flat_big":  ("Thrust", "SmallBlockLargeFlatAtmosphericThrust", "Small", (3, 3, 2), 1060, 230000, True),
+    "s_sbatt":     ("BatteryBlock", "SmallBlockSmallBatteryBlock", "Small", (1, 1, 1), 146, 0, False),
+    "s_solar":     ("SolarPanel", "SmallBlockSolarPanel", "Small", (10, 5, 1), 143, 0, False),
+    "s_conveyor":  ("Conveyor", "SmallBlockConveyor", "Small", (1, 1, 1), 68, 0, False),
     # large grid
     "l_armor":     ("CubeBlock", "LargeBlockArmorBlock", "Large", (1, 1, 1), 500, 0, False),
     "l_atmo":      ("Thrust", "LargeBlockSmallAtmosphericThrust", "Large", (1, 1, 3), 4000, 648000, True),
@@ -315,27 +321,59 @@ def drone_hull(s):
     s.add("s_atmo", (-1, 6, 7), fwd="Left", name="Thruster Right")
     s.add("s_rc", (4, 9, 3), name="Remote Control")
     s.add("s_gyro", (4, 5, 3), name="Gyroscope 1")
-    s.add("s_gyro", (4, 5, 11), name="Gyroscope 2")
+    s.add("s_gyro", (4, 5, 11), fwd="Forward", up="Down", name="Gyroscope 2")   # mounts on its bottom: face it into the hull
     s.add("s_battery", (3, 8, 4), name="Battery 1")
     s.add("s_battery", (3, 8, 10), name="Battery 2")
     s.add("s_antenna", (2, 10, 12), name="Antenna", extra="<BroadcastRadius>5000</BroadcastRadius>")   # small-grid max
-    for c in [(1, 7, 10), (7, 7, 10), (1, 7, 5), (7, 7, 5)]:
+    # (7|8, 7, 7) and (0|1, 7, 7) hold the lateral thrusters by the middle cell (their only mount points)
+    for c in [(1, 7, 10), (7, 7, 10), (1, 7, 5), (7, 7, 5), (7, 7, 7), (8, 7, 7), (0, 7, 7), (1, 7, 7)]:
         s.add("s_armor", c)
 
 
 # ======================================================================
-# FS Spotter Atmo (small grid): recon / designation drone. The Buster
-# airframe without payload, with a small Gatling turret on top: its lock (vanilla)
-# or WeaponCore's threat list for its grid (WeaponCore worlds) is the spotter's
-# sensor, plus the nose cameras. Its PB runs the Drone script with Role=Spotter.
+# FS Spotter Atmo (small grid): light recon plane, no armor, no weapons
+# (after the 'Butterfly' recon drone, vanilla blocks only). A 1.5 m wide
+# fuselage of functional blocks around one battery, solar-panel wings,
+# one large flat atmospheric lift thruster under the battery, small flat
+# thrusters on the battery flanks, a conveyor boom with the antenna as tail.
+# Sensors: 6 down-looking cameras (nose rows scan ahead, tail rows behind)
+# and one forward camera. Docks nose-in like a Buster. Every block is held
+# by its mount points (tools/connect.py checks this; there is no armor).
 # ======================================================================
+# The game drops Custom Data from a pasted blueprint, so the role comes from the PB name: the Drone
+# script defaults to Role=Spotter (and the spotter's search settings) on a PB or grid named "...Spotter...".
+
+
 def spotter():
     s = Ship("FS Spotter Atmo", "Small")
-    drone_hull(s)
-    s.add("s_gatling", (2, 10, 6), fwd="Forward", up="Up", name="Gatling Turret [Sensor]", extra=TURRET_AMMO)
-    s.add("s_pb", (2, 9, 3), name="Programmable Block [Fleet Drone]", program="Drone",
-          extra="<CustomData>[Drone]\nRole=Spotter\n</CustomData>")
-    s.fill((2, 5, 2), (6, 9, 13), "s_armor")
+    s.add("s_connector", (0, 0, 0), fwd="Forward", up="Up", name="Connector")
+    s.add("s_battery", (0, 0, 2), name="Battery")
+    s.add("s_flat_big", (0, -2, 2), fwd="Down", up="Forward", name="Lift Thruster")
+    # top deck
+    s.add("s_rc", (0, 2, 2), name="Remote Control")
+    s.add("s_sbatt", (1, 2, 2), name="Small Battery 1")
+    s.add("s_pb", (0, 2, 3), name="Programmable Block [Fleet Drone] [Spotter]", program="Drone")
+    s.add("s_gyro", (2, 2, 4), name="Gyroscope")
+    s.add("s_sbatt", (1, 3, 2), name="Small Battery 2")
+    s.add("s_camera", (1, 3, 1), fwd="Forward", up="Up", name="Camera Forward")
+    # wings on the battery flanks
+    s.add("s_solar", (3, 1, 2), fwd="Up", up="Backward", name="Wing R")
+    s.add("s_solar", (-10, 1, 2), fwd="Up", up="Backward", name="Wing L")
+    # horizontal thrusters under the wing roots, held by the battery
+    for x, side in ((3, "R"), (-1, "L")):
+        s.add("s_flat", (x, 0, 2), fwd="Forward", name=f"Thruster Brake {side}")
+        s.add("s_flat", (x, 0, 4), fwd="Backward", name=f"Thruster Forward {side}")
+    s.add("s_flat", (3, 0, 3), fwd="Right", name="Thruster Left")
+    s.add("s_flat", (-1, 0, 3), fwd="Left", name="Thruster Right")
+    # tail boom and antenna
+    for z in (5, 6, 7):
+        s.add("s_conveyor", (1, 1, z))
+    s.add("s_antenna", (1, 1, 8), fwd="Backward", name="Antenna", extra="<BroadcastRadius>5000</BroadcastRadius>")
+    # down-looking cameras: under the connector (scan ahead) and under the boom (scan behind)
+    for x in (0, 1, 2):
+        s.add("s_camera", (x, -1, 1), fwd="Down", up="Forward", name=f"Camera Down Nose {x + 1}")
+    for z in (5, 6, 7):
+        s.add("s_camera", (1, 0, z), fwd="Down", up="Backward", name=f"Camera Down Tail {z - 4}")
     s.check_exhaust(depth=6)
     return s
 
@@ -378,15 +416,18 @@ def carrier():
     for z in (6, 12, 18):
         s.add("l_atmo", (7, 2, z), fwd="Right", up="Up", name=f"Thruster Left {z}")
         s.add("l_atmo", (-1, 2, z), fwd="Left", up="Up", name=f"Thruster Right {z}")
+        for x in (7, 8, 0, 1):              # mounts: atmo thrusters only attach by their middle cell
+            s.add("l_armor", (x, 1, z))
     # power & control in the keel
     for i, p in enumerate([(3, 1, 10), (5, 1, 10), (3, 1, 13), (5, 1, 13)]):
         s.add("l_reactor", p, name=f"Small Reactor {i + 1}")
     for i, p in enumerate([(3, 3, 10), (5, 3, 10), (3, 3, 13), (5, 3, 13)]):
         s.add("l_battery", p, name=f"Battery {i + 1}")
-    for i, p in enumerate([(4, 1, 9), (4, 2, 9), (4, 3, 9), (4, 1, 14), (4, 2, 14), (4, 3, 14)]):
+    # gyros and PBs only mount on their bottom face: gyros on the keel floor, PBs on the reactors
+    for i, p in enumerate([(3, 1, 9), (4, 1, 9), (5, 1, 9), (3, 1, 14), (4, 1, 14), (5, 1, 14)]):
         s.add("l_gyro", p, name=f"Gyroscope {i + 1}")
-    s.add("l_pb", (3, 2, 11), name="Programmable Block [Fleet Core]", program="HubCore")
-    s.add("l_pb", (5, 2, 11), name="Programmable Block [Fleet UI]", program="HubUI")
+    s.add("l_pb", (3, 2, 10), name="Programmable Block [Fleet Core]", program="HubCore")
+    s.add("l_pb", (5, 2, 10), name="Programmable Block [Fleet UI]", program="HubUI")
     # deck: cockpit (hub reference + UI screens), turrets, antenna
     # toolbar page 1: Defense menu (screen 3), page 2: Fleet screen (screen 0)
     ui = "Programmable Block [Fleet UI]"
@@ -400,11 +441,13 @@ def carrier():
     s.add("l_gatling", (3, 6, 18), name="Gatling Turret Aft")
     # designation: a camera for `designate`; WeaponCore's HUD lock and threat list feed strikes too
     s.add("l_camera", (6, 6, 0), fwd="Forward", up="Up", name="Camera [Designator]")
+    s.add("l_armor", (6, 6, 1))                               # the camera mounts on its back face
     s.add("l_antenna", (7, 6, 21), name="Antenna", extra="<BroadcastRadius>20000</BroadcastRadius>")   # reaches Busters across the S&D area
     # docking connectors on the deck edges, facing outward
     for i, z in enumerate((4, 9, 14, 19)):
         s.add("l_connector", (-1, 5, z), fwd="Left", up="Up", name=f"Connector [Dock] L{i + 1}")
         s.add("l_connector", (9, 5, z), fwd="Right", up="Up", name=f"Connector [Dock] R{i + 1}")
+    s.add("l_connector", (4, 5, -1), fwd="Forward", up="Up", name="Connector [Dock] Bow")   # the spotter's
     # structure
     s.fill((0, 5, 0), (8, 5, 23), "l_armor")                 # flight deck
     s.fill((2, 0, 0), (6, 4, 23), "l_armor", shell=True)     # keel shell
@@ -434,6 +477,7 @@ def report(s, cargo=0, note=""):
 # written as connected, and Hub Core also locks occupied docks at start-up.
 # ======================================================================
 DOCK_GAP = 0.05
+FLEET_NAME = "FS Carrier Atmo + 8 Busters + Spotter"
 LG, SG = 2.5, 0.5
 
 
@@ -442,22 +486,23 @@ def rot_y(v, deg):
     return (v[0] * math.cos(a) + v[2] * math.sin(a), v[1], -v[0] * math.sin(a) + v[2] * math.cos(a))
 
 
-def combined(carrier_ship, buster_ship, code):
+def combined(carrier_ship, buster_ship, spotter_ship, code):
     c_conn = [(i, b) for i, b in enumerate(carrier_ship.blocks) if b["key"] == "l_connector"]
-    bi = buster_ship.index_of("Connector")
-    bconn = buster_ship.blocks[bi]
-    # buster connector face centre in buster-local metres (face on the -Z side of its min cell row)
-    bc = [sum(c[k] for c in bconn["cells"]) / len(bconn["cells"]) * SG for k in range(3)]
-    zmin = min(c[2] for c in bconn["cells"])
-    b_face = (bc[0], bc[1], (zmin - 0.5) * SG)
     grids, c_extra = [], {}
-    world_cells = []   # (centre, half) boxes of every docked buster block, for the clearance check
+    world_cells = []   # (centre, half) boxes of every docked drone block, for the clearance check
     for n, (ci, cb) in enumerate(c_conn):
+        ship = spotter_ship if cb["name"].endswith("Bow") else buster_ship
+        bi = ship.index_of("Connector")
+        bconn = ship.blocks[bi]
+        # drone connector face centre in drone-local metres (face on the -Z side of its min cell row)
+        bc = [sum(c[k] for c in bconn["cells"]) / len(bconn["cells"]) * SG for k in range(3)]
+        zmin = min(c[2] for c in bconn["cells"])
+        b_face = (bc[0], bc[1], (zmin - 0.5) * SG)
         d = DIRS[cb["fwd"]]                       # carrier connector facing (world, carrier at origin)
         cc = [cb["cells"][0][k] * LG for k in range(3)]
         face = tuple(cc[k] + d[k] * (LG / 2 + DOCK_GAP) for k in range(3))
         # buster forward must point back at the carrier: -d. Rotation about Y mapping (0,0,-1) -> -d
-        deg = {(-1, 0, 0): -90, (1, 0, 0): 90}[d]
+        deg = {(-1, 0, 0): -90, (1, 0, 0): 90, (0, 0, -1): 180}[d]
         fwd = rot_y((0, 0, -1), deg)
         assert all(abs(fwd[k] + d[k]) < 1e-9 for k in range(3))
         off = rot_y(b_face, deg)
@@ -465,10 +510,10 @@ def combined(carrier_ship, buster_ship, code):
         half = math.radians(deg) / 2
         quat = (0, math.sin(half), 0, math.cos(half))
         inst = f"dock{n}"
-        c_extra[ci] = f"<ConnectedEntityId>{buster_ship.eid(inst, bi)}</ConnectedEntityId><IsMaster>true</IsMaster>"
+        c_extra[ci] = f"<ConnectedEntityId>{ship.eid(inst, bi)}</ConnectedEntityId><IsMaster>true</IsMaster>"
         b_extra = {bi: f"<ConnectedEntityId>{carrier_ship.eid('0', ci)}</ConnectedEntityId><IsMaster>false</IsMaster>"}
-        grids.append(buster_ship.grid_xml(code, inst, pos, tuple(round(v, 9) for v in fwd), (0, 1, 0), quat, b_extra))
-        for blk in buster_ship.blocks:
+        grids.append(ship.grid_xml(code, inst, pos, tuple(round(v, 9) for v in fwd), (0, 1, 0), quat, b_extra))
+        for blk in ship.blocks:
             for cell in blk["cells"]:
                 w = rot_y(tuple(cell[k] * SG for k in range(3)), deg)
                 world_cells.append((tuple(pos[k] + w[k] for k in range(3)), SG / 2, cb["name"], blk["name"] or blk["key"]))
@@ -484,7 +529,7 @@ def combined(carrier_ship, buster_ship, code):
     for (wc, h, dock, what) in world_cells:
         for (cc2, hc, cname) in carrier_boxes:
             if hit(wc, h, cc2, hc):
-                raise ValueError(f"Buster at {dock}: {what} intersects carrier block {cname}")
+                raise ValueError(f"Drone at {dock}: {what} intersects carrier block {cname}")
     by_dock = {}
     for (wc, h, dock, what) in world_cells:
         by_dock.setdefault(dock, []).append(wc)
@@ -497,8 +542,8 @@ def combined(carrier_ship, buster_ship, code):
             (alo, ahi), (blo, bhi) = boxes[docks[i]], boxes[docks[j]]
             if all(alo[k] < bhi[k] - eps and blo[k] < ahi[k] - eps for k in range(3)):
                 if any(hit(p, SG / 2, q, SG / 2) for p in by_dock[docks[i]] for q in by_dock[docks[j]]):
-                    raise ValueError(f"Busters at {docks[i]} and {docks[j]} intersect")
-    name = "FS Carrier Atmo + 8 Busters"
+                    raise ValueError(f"Drones at {docks[i]} and {docks[j]} intersect")
+    name = FLEET_NAME
     return name, blueprint_xml(name, [carrier_ship.grid_xml(code, "0", extra=c_extra)] + grids)
 
 
@@ -517,11 +562,11 @@ def main():
         d = OUT / s.name
         d.mkdir(exist_ok=True)
         (d / "bp.sbc").write_text(s.xml(code), encoding="utf-8")
-    cname, cxml = combined(c, b, code)
+    cname, cxml = combined(c, b, sp, code)
     d = OUT / cname
     d.mkdir(exist_ok=True)
     (d / "bp.sbc").write_text(cxml, encoding="utf-8")
-    summary.append(f"{cname}: carrier + {len(cxml.split('<CubeGrid>')) - 2} docked Busters (connector faces {DOCK_GAP} m apart, clearance checked)")
+    summary.append(f"{cname}: carrier + {len(cxml.split('<CubeGrid>')) - 3} docked Busters + spotter on the bow (connector faces {DOCK_GAP} m apart, clearance checked)")
     print(summary[-1])
     print(f"block owner: {OWNER_ID}" if OWNER_ID else "block owner: none found (set FS_OWNER_ID): ships will paste unowned")
     (OUT / "STATS.txt").write_text("\n".join(summary) + "\n", encoding="utf-8")

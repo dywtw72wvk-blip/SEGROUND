@@ -48,6 +48,8 @@ bool provisioned, combatIdleOff = true, inFactory, targetNeutral;
 double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince, atkT, nextCon;
 int wp, scanI;                                    // recon waypoint, lidar sweep step
 MyDetectedEntityInfo det; double detT = -1e9, detSize;           // best lidar/turret contact
+MyDetectedEntityInfo held; double heldSize; int heldN;          // contact seen out of radio range, still to report
+bool reconBack;                                                  // search: on the way back along the track
 long atkId; bool handed;                          // attack target; intercept: AI has the controls
 Vector3D atkAz;                                   // attack: chosen approach azimuth (horizontal, from target)
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
@@ -111,13 +113,15 @@ void LoadConfig()
     cfg = new Cfg(Me, SEC);
     netId = cfg.I("NetId", 0);
     key = cfg.S("Key", "");
-    role = cfg.S("Role", "Buster");
+    // blueprints drop Custom Data on paste: a PB or grid named "...Spotter..." defaults to Role=Spotter
+    bool spot = Me.CustomName.Contains("Spotter") || Me.CubeGrid.CustomName.Contains("Spotter");
+    role = cfg.S("Role", spot ? "Spotter" : "Buster");
     perfMode = cfg.S("Perf", "Normal").ToUpper();
     maxSpeed = cfg.D("MaxSpeed", 100);
     dockSpeed = cfg.D("DockSpeed", 1.5);
     approach = cfg.D("ApproachDistance", 25);
     clearance = cfg.D("Clearance", 15);
-    reconSpeed = cfg.D("ReconSpeed", 60);            // search & destroy: cruise speed while searching
+    reconSpeed = cfg.D("ReconSpeed", spot ? 35 : 60); // search: cruise speed while sweeping
     minAlt = cfg.D("MinAltitude", 150);              // keep at least this far above the surface on S&D
     standoff = cfg.D("RingDistance", 2800);          // death ring distance from the target (hub sends its own)
     cone = cfg.D("RingCone", 20);                    // ring angle off vertical over the target (degrees)
@@ -125,8 +129,8 @@ void LoadConfig()
     handoff = cfg.D("AiHandoff", 600);               // intercept: hand the controls to the AI blocks inside this range
     weave = cfg.D("Weave", 30);                      // lateral weave in the dive (m), fades out near the target
     lidarRange = cfg.D("LidarRange", 3000);          // camera raycast reach while searching (space / high up)
-    lidarStep = Math.Max(5, cfg.D("LidarStep", 50)); // ground-scan grid spacing
-    lidarRate = Math.Max(1, cfg.D("LidarRate", 10)); // raycasts per second, all cameras: each one costs sim speed
+    lidarStep = Math.Max(5, cfg.D("LidarStep", spot ? 40 : 50)); // ground-scan grid spacing
+    lidarRate = Math.Max(1, cfg.D("LidarRate", spot ? 12 : 10)); // raycasts per second, all cameras: each one costs sim speed
     lidarSwath = cfg.D("LidarSwath", 1100);          // ground-scan width (line spacing + overlap)
     armDist = cfg.D("ArmDistance", 300);             // warheads arm inside this distance of the target
     fuse = cfg.D("Fuse", 8);
@@ -221,7 +225,7 @@ void Resume()
         case Proto.O_GOTO: Enter(Proto.S_GOTO); break;
         case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
         case Proto.O_HOLD: Enter(Proto.S_HOLD); break;      // stored holdPos
-        case Proto.O_SEARCH: wp = 0; Enter(Proto.S_RECON); break;
+        case Proto.O_SEARCH: wp = 0; reconBack = false; Enter(Proto.S_RECON); break;
         case Proto.O_ATTACK: atkT = T; atkId = tId; Enter(Proto.S_ATTACK); SetCombat(true); break;
         case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
         case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
@@ -406,7 +410,7 @@ void Execute(int code, Vector3D a, Vector3D b, Vector3D c, long id)
         case Proto.O_HOLD: CaptureHold(); Enter(Proto.S_HOLD); break;
         case Proto.O_GOTO: CaptureHold(); Enter(Proto.S_GOTO); break;
         case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
-        case Proto.O_SEARCH: wp = 0; Enter(Proto.S_RECON); break;
+        case Proto.O_SEARCH: wp = 0; reconBack = false; Enter(Proto.S_RECON); break;
         case Proto.O_ATTACK:                           // target fix as of now; dive immediately
             atkT = T; atkId = id;
             if (state != Proto.S_ATTACK) { atkAz = Vector3D.Zero; Enter(Proto.S_ATTACK); }
@@ -600,18 +604,27 @@ void FlyStation()
 // SEARCH: tA = start of our track, tB = forward * depth (world). The hub spaces the tracks into a
 // line abreast; each Buster joins its track and sweeps forward along it, nose and cameras ahead.
 // F_ARRIVED at the end of the track.
+// The track runs out SearchDepth and back: a small-grid antenna reaches ~5 km and the hub only hears
+// the spotter inside that, so it reports the end of the sweep (F_ARRIVED) back near the start, and a
+// contact seen out of range turns it straight back at full speed to report it.
 void FlyRecon()
 {
     double depth = tB.Length();
     Vector3D f = Util.Norm(tB), u = UpRef(ctl.WorldMatrix.Up);
-    double along = Util.Clamp(Vector3D.Dot(fl.Pos - tA, f), 0, depth);
-    Vector3D dest = tA + f * Math.Min(depth, along + Math.Max(300, reconSpeed * 6));
-    fl.FlyTo(Lift(dest), Vector3D.Zero, reconSpeed);
-    Vector3D h = f - u * Vector3D.Dot(f, u);
+    double along = Util.Clamp(Vector3D.Dot(fl.Pos - tA, f), 0, depth), look = Math.Max(300, reconSpeed * 6);
+    bool report = heldN > 0 && !InRange();
+    if (along > depth - 150 || report) reconBack = true;
+    Vector3D dir = reconBack ? -f : f;
+    Vector3D dest = tA + f * Util.Clamp(along + (reconBack ? -look : look), 0, depth);
+    fl.FlyTo(Lift(dest), Vector3D.Zero, report ? maxSpeed : reconSpeed);
+    Vector3D h = dir - u * Vector3D.Dot(dir, u);
     if (h.LengthSquared() > 0.01) holdFwd = Util.Norm(h);
     fl.Aim(ctl.WorldMatrix, holdFwd, u);
-    arrived = along > depth - 150;
+    arrived = reconBack && along < 150;
 }
+
+// can the hub hear us? (its NAV reaches us; our antenna has to reach it)
+bool InRange() { return NavFresh() && (ant == null || (hub.Pos - fl.Pos).Length() < ant.Radius - 300); }
 
 // Target fix: our own lidar ping on tId if fresh, else the hub's last fix extrapolated.
 bool Fix() { return det.EntityId == tId && T - detT < 2; }
@@ -716,6 +729,21 @@ void Lidar()
             if (d < lidarRange * 2 && c.CanScan(d)) { rays--; Seen(c.Raycast(tp)); }
             continue;
         }
+        if (ground && Vector3D.Dot(c.WorldMatrix.Forward, u) < -0.7)
+        {
+            // down-looking camera (its Up = the way it scans ahead): rows across the track, LidarStep apart
+            int n = Math.Max(3, (int)(1.4 * e / lidarStep) + 1);
+            while (rays >= 1)
+            {
+                int col = scanI % n, row = (scanI / n) % 2;
+                float yaw = (float)(-35 + 70.0 * col / (n - 1)), pitch = row == 0 ? 25 : 10;
+                double rng = e * 1.2 / (Math.Cos(yaw * Math.PI / 180) * Math.Cos(pitch * Math.PI / 180)) + 30;
+                if (!c.CanScan(rng)) break;
+                scanI++; rays--;
+                Seen(c.Raycast(rng, pitch, yaw));
+            }
+            continue;
+        }
         if (ground)
         {
             while (rays >= 1)
@@ -752,7 +780,10 @@ void ReportContact()
 {
     foreach (var t in turrets) if (!t.Closed && t.IsWorking && t.HasTarget) Seen(t.GetTargetedEntity());
     if (wc.Ok) foreach (var kv in wc.Threats(Me)) Seen(kv.Key);
-    if (T - detT < 2) net.SendContact(hubAddr, det.EntityId, (int)det.Type, detSize, det.Position, det.Velocity);
+    bool fresh = T - detT < 2, near = InRange();
+    if (fresh && !near) { held = det; heldSize = detSize; heldN = 5; }
+    if (fresh && near) { net.SendContact(hubAddr, det.EntityId, (int)det.Type, detSize, det.Position, det.Velocity); heldN = 0; }
+    else if (heldN > 0 && near) { net.SendContact(hubAddr, held.EntityId, (int)held.Type, heldSize, held.Position, held.Velocity); heldN--; }
 }
 
 // Raise a destination so the drone stays MinAltitude above the ground under it (planets only)

@@ -12,11 +12,11 @@ readonly List<IMyTextSurface> defSurf = new List<IMyTextSurface>();
 string defTag = "FS:Defense", defMsg = "";
 int defItem, defOpt;
 double defMsgT = -1e9;
-static readonly string[] DefNames = { "SEARCH", "DESIGNATE", "STRIKE", "ALERT", "DEFENSE", "FORMATION", "SCRAMBLE", "RECALL" };
-static readonly string[] DefCmds = { "search", "designate", "", "alert", "defense", "formation", "scramble", "recall" };
+static readonly string[] DefNames = { "SEARCH", "DESIGNATE", "STRIKE", "AUTO ATTACK", "ALERT", "DEFENSE", "FORMATION", "SCRAMBLE", "RECALL" };
+static readonly string[] DefCmds = { "search", "designate", "", "autoattack", "alert", "defense", "formation", "scramble", "recall" };
 static readonly string[] StrikeCmds = { "loiter", "attack", "attackall", "abort" };
 static readonly string[][] DefOpts = {
-new[] { "START", "STOP" }, new[] { "GO" }, new[] { "LOITER", "ATTACK 1", "ATTACK ALL", "ABORT" },
+new[] { "START", "STOP" }, new[] { "GO" }, new[] { "LOITER", "ATTACK 1", "ATTACK ALL", "ABORT" }, new[] { "ON", "OFF" },
 new[] { "AUTO", "GREEN", "YELLOW", "RED" }, new[] { "ON", "OFF" },
 new[] { "WEDGE", "LINE", "COLUMN", "RING", "SPHERE" }, new[] { "GO" }, new[] { "GO" } };
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
@@ -169,9 +169,10 @@ int DefCurrent(int i)
 switch (i)
 {
 case 0: return (hSad & 1) != 0 ? 1 : 0;
-case 3: return hAlertForced ? hAlert + 1 : 0;
-case 4: return hDefense ? 0 : 1;
-case 5: return Math.Max(0, Array.IndexOf(DefOpts[5], hForm));
+case 3: return (hSad & 8) != 0 ? 0 : 1;
+case 4: return hAlertForced ? hAlert + 1 : 0;
+case 5: return hDefense ? 0 : 1;
+case 6: return Math.Max(0, Array.IndexOf(DefOpts[6], hForm));
 default: return 0;
 }
 }
@@ -535,13 +536,13 @@ Box(ref f, x0, y0, W, 40 * k, C_PANEL);
 Box(ref f, x0, y0 + 38 * k, W, 2 * k, C_ACC);
 Txt(ref f, linked ? "DEFENSE" : "DEFENSE: NO LINK", x0 + 8 * k, y0 + 6 * k, 0.75f * k, linked ? C_ACC : C_BAD);
 if (linked) AlertBadge(ref f, x0 + W - 6 * k, y0 + 8 * k, k);
-float rowH = 27 * k, y = y0 + 46 * k, ts = 0.6f * k;
+float rowH = 24 * k, y = y0 + 45 * k, ts = 0.56f * k;
 for (int i = 0; i < DefNames.Length; i++, y += rowH)
 {
 bool sel = i == defItem;
 if (sel) Box(ref f, x0 + 2 * k, y, W - 4 * k, rowH - 2 * k, C_SEL);
 bool action = DefOpts[i].Length == 1;
-Color nc = action ? (i == 6 ? C_BAD : C_WARN) : i <= 2 ? C_ORANGE : C_TXT;
+Color nc = action ? (i == 7 ? C_BAD : C_WARN) : i <= 3 ? C_ORANGE : C_TXT;
 Txt(ref f, DefNames[i], x0 + 10 * k, y + 2 * k, ts, nc);
 int now = DefCurrent(i);
 string val;
@@ -550,7 +551,7 @@ else
 {
 int shown = sel ? defOpt : now;
 val = sel ? "<  " + DefOpts[i][shown] + "  >" : DefOpts[i][shown];
-if (i == 3 && shown == 0) val = sel ? "<  AUTO  >" : "AUTO (" + Proto.AlertName(hAlert) + ")";
+if (i == 4 && shown == 0) val = sel ? "<  AUTO  >" : "AUTO (" + Proto.AlertName(hAlert) + ")";
 if (i == 0 && !sel) val = (hSad & 1) != 0 ? "SEARCHING" : "OFF";
 if (i == 2 && !sel) val = (hSad & 4) != 0 ? "ON RING" : (hSad & 2) != 0 ? "TARGET SET" : "NO TARGET";
 }

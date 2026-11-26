@@ -32,6 +32,8 @@ bool provisioned, combatIdleOff = true, inFactory, targetNeutral;
 double T, lastFlightT, nextSts, nextHello, nextTel, nextScan, nextEcho, stateT, navT = -1e9, lostSince, atkT, nextCon;
 int wp, scanI;
 MyDetectedEntityInfo det; double detT = -1e9, detSize;
+MyDetectedEntityInfo held; double heldSize; int heldN;
+bool reconBack;
 long atkId; bool handed;
 Vector3D atkAz;
 int state = Proto.S_BOOT, prevState = Proto.S_IDLE;
@@ -89,13 +91,14 @@ void LoadConfig()
 cfg = new Cfg(Me, SEC);
 netId = cfg.I("NetId", 0);
 key = cfg.S("Key", "");
-role = cfg.S("Role", "Buster");
+bool spot = Me.CustomName.Contains("Spotter") || Me.CubeGrid.CustomName.Contains("Spotter");
+role = cfg.S("Role", spot ? "Spotter" : "Buster");
 perfMode = cfg.S("Perf", "Normal").ToUpper();
 maxSpeed = cfg.D("MaxSpeed", 100);
 dockSpeed = cfg.D("DockSpeed", 1.5);
 approach = cfg.D("ApproachDistance", 25);
 clearance = cfg.D("Clearance", 15);
-reconSpeed = cfg.D("ReconSpeed", 60);
+reconSpeed = cfg.D("ReconSpeed", spot ? 35 : 60);
 minAlt = cfg.D("MinAltitude", 150);
 standoff = cfg.D("RingDistance", 2800);
 cone = cfg.D("RingCone", 20);
@@ -103,8 +106,8 @@ ringRate = cfg.D("RingRate", 2);
 handoff = cfg.D("AiHandoff", 600);
 weave = cfg.D("Weave", 30);
 lidarRange = cfg.D("LidarRange", 3000);
-lidarStep = Math.Max(5, cfg.D("LidarStep", 50));
-lidarRate = Math.Max(1, cfg.D("LidarRate", 10));
+lidarStep = Math.Max(5, cfg.D("LidarStep", spot ? 40 : 50));
+lidarRate = Math.Max(1, cfg.D("LidarRate", spot ? 12 : 10));
 lidarSwath = cfg.D("LidarSwath", 1100);
 armDist = cfg.D("ArmDistance", 300);
 fuse = cfg.D("Fuse", 8);
@@ -192,7 +195,7 @@ case Proto.O_ESCORT: Enter(Proto.S_ESCORT); break;
 case Proto.O_GOTO: Enter(Proto.S_GOTO); break;
 case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
 case Proto.O_HOLD: Enter(Proto.S_HOLD); break;
-case Proto.O_SEARCH: wp = 0; Enter(Proto.S_RECON); break;
+case Proto.O_SEARCH: wp = 0; reconBack = false; Enter(Proto.S_RECON); break;
 case Proto.O_ATTACK: atkT = T; atkId = tId; Enter(Proto.S_ATTACK); SetCombat(true); break;
 case Proto.O_LOITER: atkT = T; atkId = tId; ringT0 = T; Enter(Proto.S_LOITER); break;
 case Proto.O_INTERCEPT: atkT = T; atkId = tId; handed = false; Enter(Proto.S_INTERCEPT); break;
@@ -357,7 +360,7 @@ break;
 case Proto.O_HOLD: CaptureHold(); Enter(Proto.S_HOLD); break;
 case Proto.O_GOTO: CaptureHold(); Enter(Proto.S_GOTO); break;
 case Proto.O_DOCK: Enter(Proto.S_APPROACH); break;
-case Proto.O_SEARCH: wp = 0; Enter(Proto.S_RECON); break;
+case Proto.O_SEARCH: wp = 0; reconBack = false; Enter(Proto.S_RECON); break;
 case Proto.O_ATTACK:
 atkT = T; atkId = id;
 if (state != Proto.S_ATTACK) { atkAz = Vector3D.Zero; Enter(Proto.S_ATTACK); }
@@ -527,14 +530,18 @@ void FlyRecon()
 {
 double depth = tB.Length();
 Vector3D f = Util.Norm(tB), u = UpRef(ctl.WorldMatrix.Up);
-double along = Util.Clamp(Vector3D.Dot(fl.Pos - tA, f), 0, depth);
-Vector3D dest = tA + f * Math.Min(depth, along + Math.Max(300, reconSpeed * 6));
-fl.FlyTo(Lift(dest), Vector3D.Zero, reconSpeed);
-Vector3D h = f - u * Vector3D.Dot(f, u);
+double along = Util.Clamp(Vector3D.Dot(fl.Pos - tA, f), 0, depth), look = Math.Max(300, reconSpeed * 6);
+bool report = heldN > 0 && !InRange();
+if (along > depth - 150 || report) reconBack = true;
+Vector3D dir = reconBack ? -f : f;
+Vector3D dest = tA + f * Util.Clamp(along + (reconBack ? -look : look), 0, depth);
+fl.FlyTo(Lift(dest), Vector3D.Zero, report ? maxSpeed : reconSpeed);
+Vector3D h = dir - u * Vector3D.Dot(dir, u);
 if (h.LengthSquared() > 0.01) holdFwd = Util.Norm(h);
 fl.Aim(ctl.WorldMatrix, holdFwd, u);
-arrived = along > depth - 150;
+arrived = reconBack && along < 150;
 }
+bool InRange() { return NavFresh() && (ant == null || (hub.Pos - fl.Pos).Length() < ant.Radius - 300); }
 bool Fix() { return det.EntityId == tId && T - detT < 2; }
 Vector3D AtkPos() { return Fix() ? det.Position + (Vector3D)det.Velocity * (T - detT) : tA + tB * Math.Min(5, T - atkT); }
 Vector3D AtkVel() { return Fix() ? (Vector3D)det.Velocity : tB; }
@@ -616,6 +623,20 @@ double d = (tp - cp).Length() + 50;
 if (d < lidarRange * 2 && c.CanScan(d)) { rays--; Seen(c.Raycast(tp)); }
 continue;
 }
+if (ground && Vector3D.Dot(c.WorldMatrix.Forward, u) < -0.7)
+{
+int n = Math.Max(3, (int)(1.4 * e / lidarStep) + 1);
+while (rays >= 1)
+{
+int col = scanI % n, row = (scanI / n) % 2;
+float yaw = (float)(-35 + 70.0 * col / (n - 1)), pitch = row == 0 ? 25 : 10;
+double rng = e * 1.2 / (Math.Cos(yaw * Math.PI / 180) * Math.Cos(pitch * Math.PI / 180)) + 30;
+if (!c.CanScan(rng)) break;
+scanI++; rays--;
+Seen(c.Raycast(rng, pitch, yaw));
+}
+continue;
+}
 if (ground)
 {
 while (rays >= 1)
@@ -648,7 +669,10 @@ void ReportContact()
 {
 foreach (var t in turrets) if (!t.Closed && t.IsWorking && t.HasTarget) Seen(t.GetTargetedEntity());
 if (wc.Ok) foreach (var kv in wc.Threats(Me)) Seen(kv.Key);
-if (T - detT < 2) net.SendContact(hubAddr, det.EntityId, (int)det.Type, detSize, det.Position, det.Velocity);
+bool fresh = T - detT < 2, near = InRange();
+if (fresh && !near) { held = det; heldSize = detSize; heldN = 5; }
+if (fresh && near) { net.SendContact(hubAddr, det.EntityId, (int)det.Type, detSize, det.Position, det.Velocity); heldN = 0; }
+else if (heldN > 0 && near) { net.SendContact(hubAddr, held.EntityId, (int)held.Type, heldSize, held.Position, held.Velocity); heldN--; }
 }
 Vector3D Lift(Vector3D p)
 {

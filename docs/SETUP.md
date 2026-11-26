@@ -295,13 +295,14 @@ On cockpit screens, the Hub UI uses a compact layout with larger text. `CockpitZ
 
 | Command | Effect |
 |---|---|
-| `search` / `search stop` | Spotters (drones with `Role=Spotter`) sweep forward `SearchDepth` (10 km) at `SearchAltitude` (800 m) above the hub, line abreast `SearchSpacing` apart if there are several. What their sensor turret tracks (WeaponCore threats, or the vanilla turret lock) comes back as contacts. |
+| `search` / `search stop` | Spotters (drones with `Role=Spotter`) fly out `SearchDepth` (10 km) and back at `SearchAltitude` (450 m) above the hub, line abreast `SearchSpacing` apart if there are several. Down-looking cameras scan the ground in rows across the track, `LidarStep` apart. A small-grid antenna only reaches about 5 km, so a spotter that sees something beyond that turns straight back to report it, and the sweep ends when it gets back to the start. |
 | `designate` | Raycast `DesignateRange` (10 km) from the hub camera tagged `[Designator]` (look through it first: hotbar slot 6). A grid hit becomes the target; terrain becomes a GPS target. The GPS is logged. |
 | `target GPS:name:x:y:z:` / `target x y z` / `target clear` | Designate a point / clear all contacts. |
 | `loiter` | Every Buster (docked ones launch one per `LaunchInterval`) to the death ring: `RingDistance` (2800 m) up a `RingCone` (20 deg) cone over the target, evenly spaced by azimuth, rotating at `RingRate` (2 deg/s). |
 | `attack [n]` | n Busters (default 1) leave the ring and dive. |
 | `attackall` | Every Buster on the ring dives, `AttackStagger` (1.5 s) apart, each aimed at its own side of the target. |
-| `abort` | Strike Busters back to escort. `recall` also aborts. |
+| `abort` | Strike Busters back to escort. `recall` also aborts. Auto attack leaves the aborted target alone. |
+| `autoattack on` / `off` | Auto attack (on by default, `AutoAttack`): a hostile grid within `AutoAttackRange` (3 km) of the carrier gets every ready Buster straight from the dock or the formation, `AttackStagger` apart. The designated target if it's in range, else the nearest contact. Needs defense on. Also on the Defense screen as AUTO ATTACK. |
 
 Contacts come from spotters, `designate`, `target`, the IGC designation channel `FS<NetId>/des`, and the hub's own sensors: in **WeaponCore** worlds the target you lock with WeaponCore's targeting HUD (treated as a designation) and WeaponCore's threat list for the carrier; in vanilla worlds any turret or turret controller on the hub with a lock. The Hub Core status shows `WeaponCore: linked` when the API is up. The largest contact is the target (designations always win); contacts nobody has seen for `ContactTimeout` (20 s) are dropped, designations are kept until `target clear`.
 

@@ -45,7 +45,8 @@ class Contact { public Vector3D P, V; public double Size, T; public int Type; pu
 readonly Dictionary<long, Contact> contacts = new Dictionary<long, Contact>();
 readonly List<long> dead = new List<long>();
 readonly List<Drone> launchQ = new List<Drone>(), attackQ = new List<Drone>();
-bool searching, loitering, sadNeutral;
+bool searching, loitering, sadNeutral, autoOn;
+double autoRange; long autoSkip;
 long tgtId; double icptRange, sadDepth, sadSpacing, sadAlt, sadForget, ringDist, stagger, desRange, nextAttack, noTgtSince = -1;
 string desTag = "[Designator]";
 readonly List<IMyTurretControlBlock> hubDesig = new List<IMyTurretControlBlock>();
@@ -138,12 +139,14 @@ if (!Formation.Valid(formB)) formB = "RING";
 spacing = Math.Max(5, cfg.D("Spacing", 40));
 sadDepth = cfg.D("SearchDepth", 10000);
 sadSpacing = cfg.D("SearchSpacing", 1000);
-sadAlt = cfg.D("SearchAltitude", 800);
+sadAlt = cfg.D("SearchAltitude", 450);
 sadNeutral = cfg.B("TargetNeutral", false);
 sadForget = cfg.D("ContactTimeout", 20);
 ringDist = cfg.D("RingDistance", 2800);
 icptRange = cfg.D("InterceptRange", 4000);
 stagger = cfg.D("AttackStagger", 1.5);
+autoOn = cfg.B("AutoAttack", true);
+autoRange = cfg.D("AutoAttackRange", 3000);
 desRange = cfg.D("DesignateRange", 10000);
 desTag = cfg.S("DesignatorTag", "[Designator]");
 koCfg = cfg.D("KeepOutRadius", 0);
@@ -645,9 +648,10 @@ if (bc == null) tgtId = 0;
 if (searching)
 {
 bool done = true;
-foreach (var d in reg.Values) if (d.Dir == Proto.O_SEARCH && !d.LostFlag && (d.Flags & Proto.F_ARRIVED) == 0) done = false;
+foreach (var d in reg.Values) if (d.Dir == Proto.O_SEARCH && (d.Flags & Proto.F_ARRIVED) == 0 && T - d.Seen < 600) done = false;
 if (done) { Log("Search: sweep complete"); StopSearch(); }
 }
+if (autoOn && defense && !loitering) AutoAttack(bc);
 if (!loitering) return;
 if (bc == null)
 {
@@ -745,6 +749,24 @@ Vector3D r = Vector3D.Cross(f, u), o = d.MissOff;
 double al = Vector3D.Dot(o, f), ri = Vector3D.Dot(o, r), up = Vector3D.Dot(o, u);
 return "closest " + Util.Dist(d.Miss) + ": " + Util.Dist(Math.Abs(al)) + (al >= 0 ? " long, " : " short, ")
 + Util.Dist(Math.Abs(ri)) + (ri >= 0 ? " right, " : " left, ") + Util.Dist(Math.Abs(up)) + (up >= 0 ? " above" : " below");
+}
+void AutoAttack(Contact bc)
+{
+long nid = 0; Contact near = null; double nd = autoRange;
+foreach (var kv in contacts)
+{
+double r = (kv.Value.P - M.Translation).Length();
+if (kv.Key > 0 && r < nd) { nd = r; nid = kv.Key; near = kv.Value; }
+}
+if (near == null) return;
+if (bc == null || (bc.P - M.Translation).Length() > autoRange) { Designated(nid, near.Src); tgtId = nid; bc = near; }
+if (tgtId == autoSkip) return;
+attackQ.Clear();
+foreach (var d in sorted)
+if (!d.LostFlag && IsDefense(d.Role) && d.Dir != Proto.O_ATTACK && d.Dir != Proto.O_INTERCEPT && (d.Flags & Proto.F_WANT_RTB) == 0) attackQ.Add(d);
+if (attackQ.Count == 0) return;
+loitering = true; noTgtSince = -1; nextAttack = T; launchQ.Clear();
+Log("AUTO ATTACK: " + attackQ.Count + " Buster(s) -> " + TgtText() + "  " + Gps("FS Target", bc.P));
 }
 void Attack(int n, bool all)
 {
@@ -995,7 +1017,12 @@ break;
 case "loiter": Loiter(); break;
 case "attack": { int n; Attack(t.Length > 1 && int.TryParse(t[1], out n) ? Math.Max(1, n) : 1, false); } break;
 case "attackall": Attack(0, true); break;
-case "abort": Log("Strike aborted: Busters returning"); Abort(); break;
+case "abort": Log("Strike aborted: Busters returning"); autoSkip = tgtId; Abort(); break;
+case "autoattack":
+autoOn = t.Length < 2 ? !autoOn : t[1].ToLower() != "off";
+cfg.Set("AutoAttack", autoOn ? "true" : "false"); autoSkip = 0;
+Log("Auto attack " + (autoOn ? "ON: hostiles inside " + Util.Dist(autoRange) + " get the Busters" : "OFF"));
+break;
 case "recall":
 Abort(); StopSearch();
 defense = false; cfg.Set("Defense", "false"); alertOverride = -1;
@@ -1173,7 +1200,7 @@ sb.Append("H|").Append(mode).Append('|').Append(cfgMode).Append('|').Append(mode
 .Append('|').Append(hasWp ? 1 : 0).Append('|').Append((int)(perf.Avg * 1000)).Append('|').Append(online)
 .Append('|').Append(Util.Clean(Me.CubeGrid.CustomName))
 .Append('|').Append(alert).Append('|').Append(alertOverride >= 0 ? 1 : 0).Append('|').Append(safe ? 1 : 0).Append('|').Append(defense ? 1 : 0)
-.Append('|').Append(jumpState).Append('|').Append((searching ? 1 : 0) | (tgtId != 0 ? 2 : 0) | (loitering ? 4 : 0)).Append('|').Append(Util.Clean(TgtText()))
+.Append('|').Append(jumpState).Append('|').Append((searching ? 1 : 0) | (tgtId != 0 ? 2 : 0) | (loitering ? 4 : 0) | (autoOn ? 8 : 0)).Append('|').Append(Util.Clean(TgtText()))
 .Append('\n');
 foreach (var d in sorted)
 {

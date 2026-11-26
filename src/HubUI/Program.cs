@@ -23,11 +23,11 @@ string defTag = "FS:Defense", defMsg = "";
 int defItem, defOpt;
 double defMsgT = -1e9;
 // Defense menu: up/down = item, left/right = value, apply = send. Commands are "<cmd> <value>".
-static readonly string[] DefNames = { "SEARCH", "DESIGNATE", "STRIKE", "ALERT", "DEFENSE", "FORMATION", "SCRAMBLE", "RECALL" };
-static readonly string[] DefCmds = { "search", "designate", "", "alert", "defense", "formation", "scramble", "recall" };
+static readonly string[] DefNames = { "SEARCH", "DESIGNATE", "STRIKE", "AUTO ATTACK", "ALERT", "DEFENSE", "FORMATION", "SCRAMBLE", "RECALL" };
+static readonly string[] DefCmds = { "search", "designate", "", "autoattack", "alert", "defense", "formation", "scramble", "recall" };
 static readonly string[] StrikeCmds = { "loiter", "attack", "attackall", "abort" };
 static readonly string[][] DefOpts = {
-    new[] { "START", "STOP" }, new[] { "GO" }, new[] { "LOITER", "ATTACK 1", "ATTACK ALL", "ABORT" },
+    new[] { "START", "STOP" }, new[] { "GO" }, new[] { "LOITER", "ATTACK 1", "ATTACK ALL", "ABORT" }, new[] { "ON", "OFF" },
     new[] { "AUTO", "GREEN", "YELLOW", "RED" }, new[] { "ON", "OFF" },
     new[] { "WEDGE", "LINE", "COLUMN", "RING", "SPHERE" }, new[] { "GO" }, new[] { "GO" } };
 readonly List<IMyTerminalBlock> tmp = new List<IMyTerminalBlock>();
@@ -200,9 +200,10 @@ int DefCurrent(int i)
     switch (i)
     {
         case 0: return (hSad & 1) != 0 ? 1 : 0;
-        case 3: return hAlertForced ? hAlert + 1 : 0;
-        case 4: return hDefense ? 0 : 1;
-        case 5: return Math.Max(0, Array.IndexOf(DefOpts[5], hForm));
+        case 3: return (hSad & 8) != 0 ? 0 : 1;
+        case 4: return hAlertForced ? hAlert + 1 : 0;
+        case 5: return hDefense ? 0 : 1;
+        case 6: return Math.Max(0, Array.IndexOf(DefOpts[6], hForm));
         default: return 0;
     }
 }
